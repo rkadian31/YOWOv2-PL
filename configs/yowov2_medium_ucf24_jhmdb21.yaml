@@ -109,12 +109,8 @@ model:
   freeze_backbone_3d: true
   metric_iou_thresholds:
   - 0.5
-  - 0.75
-  - 0.95
   metric_rec_thresholds:
   - 0.5
-  - 0.7
-  - 0.9
   metric_max_detection_thresholds:
   - 1
   - 10
