@@ -42,14 +42,14 @@ trainer:
   default_root_dir: null
 model:
   model_config:
-    backbone_2d: "yolo_free_nano"
-    backbone_3d: "shufflenet_v2_x1_0"
+    backbone_2d: "yolo_free_large"
+    backbone_3d: "resnext101"
     pretrained_2d: true
     pretrained_3d: true
-    head_dim: 64
+    head_dim: 256
     head_norm: "BN" # or GN (Group Norm)
-    head_act: "lrelu" # relu, silu, mish
-    head_depthwise: true
+    head_act: "silu" # relu, silu, mish
+    head_depthwise: false
     num_classes: 24
     stride: [8, 16, 32]
     conf_thresh: 0.005

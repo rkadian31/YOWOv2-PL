@@ -9,7 +9,7 @@ trainer:
   logger: null
   callbacks: null
   fast_dev_run: false
-  max_epochs: 8
+  max_epochs: 7
   min_epochs: null
   max_steps: -1
   min_steps: null
@@ -26,7 +26,7 @@ trainer:
   enable_checkpointing: null
   enable_progress_bar: null
   enable_model_summary: null
-  accumulate_grad_batches: 1
+  accumulate_grad_batches: 16
   gradient_clip_val: null
   gradient_clip_algorithm: null
   deterministic: null
@@ -139,6 +139,6 @@ data:
     len_clip: 16
     sampling_rate: 1
     batch_size:
-      train: 64
-      val: 32
-      test: 64
+      train: 8
+      val: 8
+      test: 8
