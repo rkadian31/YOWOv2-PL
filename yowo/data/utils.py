@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Tuple
 import torch
 from scipy.io import loadmat
 import os
@@ -9,6 +9,7 @@ __all__ = [
     "collate_fn",
     "load_ground_truth_ucf24"
 ]
+
 
 def load_ground_truth_ucf24(
     data_root: str,
@@ -39,21 +40,23 @@ def load_ground_truth_ucf24(
         n_tubes = len(gt_data[0][i][2][0])
         v_annotation = {}
         all_gt_boxes = []
-        for j in range(n_tubes):  
-            gt_one_tube = [] 
+        for j in range(n_tubes):
+            gt_one_tube = []
             tube_start_frame = gt_data[0][i][2][0][j][1][0][0]
             tube_end_frame = gt_data[0][i][2][0][j][0][0][0]
             tube_class = gt_data[0][i][2][0][j][2][0][0]
             tube_data = gt_data[0][i][2][0][j][3]
             tube_length = tube_end_frame - tube_start_frame + 1
-        
+
             for k in range(tube_length):
                 gt_boxes = []
                 gt_boxes.append(int(tube_start_frame.astype(np.uint16)+k))
                 gt_boxes.append(float(tube_data[k][0]))
                 gt_boxes.append(float(tube_data[k][1]))
-                gt_boxes.append(float(tube_data[k][0]) + float(tube_data[k][2]))
-                gt_boxes.append(float(tube_data[k][1]) + float(tube_data[k][3]))
+                gt_boxes.append(
+                    float(tube_data[k][0]) + float(tube_data[k][2]))
+                gt_boxes.append(
+                    float(tube_data[k][1]) + float(tube_data[k][3]))
                 gt_one_tube.append(gt_boxes)
             all_gt_boxes.append(gt_one_tube)
 
@@ -65,8 +68,9 @@ def load_ground_truth_ucf24(
     print(len(gt_videos))
     return gt_videos
 
+
 class CollateFn:
-    def __call__(self, batch: Any) -> torch.Any:
+    def __call__(self, batch: Any) -> Tuple:
         batch_frame_id = []
         batch_key_target = []
         batch_video_clips = []
@@ -75,15 +79,16 @@ class CollateFn:
             key_frame_id = sample[0]
             video_clip = sample[1]
             key_target = sample[2]
-            
+
             batch_frame_id.append(key_frame_id)
             batch_video_clips.append(video_clip)
             batch_key_target.append(key_target)
 
         # List [B, 3, T, H, W] -> [B, 3, T, H, W]
         batch_video_clips = torch.stack(batch_video_clips)
-        
+
         return batch_frame_id, batch_video_clips, batch_key_target
+
 
 def collate_fn(batch):
     batch_frame_id = []
@@ -94,14 +99,14 @@ def collate_fn(batch):
         key_frame_id = sample[0]
         video_clip = sample[1]
         key_target = sample[2]
-        
+
         batch_frame_id.append(key_frame_id)
         batch_video_clips.append(video_clip)
         batch_key_target.append(key_target)
 
     # List [B, 3, T, H, W] -> [B, 3, T, H, W]
     batch_video_clips = torch.stack(batch_video_clips)
-    
+
     return batch_frame_id, batch_video_clips, batch_key_target
 
 # class CollateFunc(object):
@@ -114,12 +119,12 @@ def collate_fn(batch):
 #             key_frame_id = sample[0]
 #             video_clip = sample[1]
 #             key_target = sample[2]
-            
+
 #             batch_frame_id.append(key_frame_id)
 #             batch_video_clips.append(video_clip)
 #             batch_key_target.append(key_target)
 
 #         # List [B, 3, T, H, W] -> [B, 3, T, H, W]
 #         batch_video_clips = torch.stack(batch_video_clips)
-        
+
 #         return batch_frame_id, batch_video_clips, batch_key_target
