@@ -169,7 +169,7 @@ class YOWOv2Lightning(LightningModule):
                     dest_height=batch_target[idx]["orig_size"][1]
                 ),
                 "scores": scores,
-                "labels": labels.long() + 1,  # int64
+                "labels": labels.long(),  # int64
             }
             preds.append(pred)
 
