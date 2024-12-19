@@ -176,12 +176,13 @@ class AVADataModule(LightningDataModule):
         annotation_dir: str = 'annotation_dir',
         labelmap_file: str = 'labelmap_file',
         batch_size: int = 8,
-        collate_fn: Optional[Any] = None,
+        collate_fn: Optional[Callable[[Iterable], Any]] = None,
         gt_box_list: Optional[str] = None,
         exclusion_file: Optional[str] = None,
         img_size: int = 224,
         len_clip: int = 16,
-        sampling_rate: int = 1
+        sampling_rate: int = 1,
+        num_workers: Union[Literal["auto"], int] = "auto"
     ) -> None:
         super().__init__()
         self.data_root = data_root
@@ -198,6 +199,8 @@ class AVADataModule(LightningDataModule):
         # self.transform = transform
         self.len_clip = len_clip
         self.sampling_rate = sampling_rate
+
+        self.num_workers = os.cpu_count() if num_workers == "auto" else num_workers
 
     def prepare_data(self) -> None:
         return super().prepare_data()
@@ -253,7 +256,8 @@ class AVADataModule(LightningDataModule):
             batch_size=self.batch_size,
             collate_fn=self.collate_fn,
             pin_memory=True,
-            drop_last=True
+            drop_last=True,
+            num_workers=self.num_workers
         )
 
     def test_dataloader(self) -> EVAL_DATALOADERS:
@@ -262,5 +266,6 @@ class AVADataModule(LightningDataModule):
             batch_size=self.batch_size,
             collate_fn=self.collate_fn,
             pin_memory=True,
-            drop_last=False
+            drop_last=False,
+            num_workers=self.num_workers
         )

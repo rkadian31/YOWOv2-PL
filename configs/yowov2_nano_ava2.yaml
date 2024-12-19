@@ -1,0 +1,139 @@
+# lightning.pytorch==2.3.2
+seed_everything: true
+trainer:
+  accelerator: auto
+  strategy: auto
+  devices: auto
+  num_nodes: 1
+  precision: null
+  logger: null
+  callbacks: null
+  fast_dev_run: false
+  max_epochs: 9
+  min_epochs: null
+  max_steps: -1
+  min_steps: null
+  max_time: null
+  limit_train_batches: null
+  limit_val_batches: null
+  limit_test_batches: null
+  limit_predict_batches: null
+  overfit_batches: 0.0
+  val_check_interval: null
+  check_val_every_n_epoch: 1
+  num_sanity_val_steps: null
+  log_every_n_steps: null
+  enable_checkpointing: null
+  enable_progress_bar: null
+  enable_model_summary: null
+  accumulate_grad_batches: 16
+  gradient_clip_val: null
+  gradient_clip_algorithm: null
+  deterministic: null
+  benchmark: null
+  inference_mode: true
+  use_distributed_sampler: true
+  profiler: null
+  detect_anomaly: false
+  barebones: false
+  plugins: null
+  sync_batchnorm: false
+  reload_dataloaders_every_n_epochs: 0
+  default_root_dir: null
+model:
+  model_config:
+    backbone_2d: "yolo_free_nano"
+    backbone_3d: "shufflenet_v2_x1_0"
+    pretrained_2d: true
+    pretrained_3d: true
+    head_dim: 64
+    head_norm: "BN" # or GN (Group Norm)
+    head_act: "lrelu" # relu, silu, mish
+    head_depthwise: true
+    num_classes: 80
+    stride: [8, 16, 32]
+    conf_thresh: 0.005
+    nms_thresh: 0.5
+    topk: 40
+    multi_hot: true
+    num_cls_heads: 2
+    num_reg_heads: 2
+    use_aggregate_feat: false
+    use_blurpool: false
+  loss_config:
+    topk_candicate: 10
+    center_sampling_radius: 2.5
+    loss_conf_weight: 1
+    loss_cls_weight: 1
+    loss_reg_weight: 5
+    focal_loss: false
+  optimizer:
+    class_path: torch.optim.AdamW
+    init_args:
+      lr: 0.0001
+      betas:
+      - 0.9
+      - 0.999
+      eps: 1.0e-08
+      weight_decay: 0.0005
+      amsgrad: false
+      maximize: false
+      foreach: null
+      capturable: false
+      differentiable: false
+      fused: null
+  scheduler_config:
+    scheduler:
+      class_path: torch.optim.lr_scheduler.MultiStepLR
+      init_args:
+        milestones:
+        - 3
+        - 4
+        - 5
+        - 6
+        gamma: 0.5
+        last_epoch: -1
+    interval: epoch
+    frequency: 1
+  warmup_config:
+    scheduler:
+      class_path: yowo.schedulers.WarmupLRScheduler
+      init_args:
+        name: linear
+        max_iter: 500
+        factor: 0.00066667
+        last_epoch: -1
+    interval: step
+    frequency: 1
+  freeze_backbone_2d: true
+  freeze_backbone_3d: true
+  metric_iou_thresholds:
+  - 0.5
+  metric_rec_thresholds:
+  - 0.5
+  metric_max_detection_thresholds:
+  - 1
+  - 10
+  - 100
+# ckpt_path: null
+data:
+  class_path: yowo.data.AVADataModule
+  init_args:
+    data_root: null
+    frames_dir: frames
+    frame_list: frame_lists
+    annotation_dir: annotations
+    labelmap_file: ava_v2.2/ava_action_list_v2.2_for_activitynet_2019.pbtxt
+    gt_box_list: ava_v2.2/ava_train_v2.2.csv
+    exclusion_file: ava_v2.2/ava_train_excluded_timestamps_v2.2.csv
+    aug_params:
+      jitter: 0.2
+      hue: 0.1
+      saturation: 1.5
+      exposure: 1.5
+    collate_fn: yowo.data.utils.collate_fn
+    num_workers: auto
+    img_size: 224
+    len_clip: 16
+    sampling_rate: 1
+    batch_size: 8
