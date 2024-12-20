@@ -168,25 +168,37 @@ class YOWO(nn.Module):
 
         return pred_box
 
-    def post_process_one_hot(self, conf_preds, cls_preds, reg_preds, anchors) -> tuple[torch.Tensor]:
+    def post_process_one_hot(
+        self,
+        conf_preds: list[torch.Tensor],
+        cls_preds: list[torch.Tensor],
+        reg_preds: list[torch.Tensor]
+    ) -> tuple[torch.Tensor]:
         """
         Input:
-            conf_preds: (Tensor) [H x W, 1]
-            cls_preds: (Tensor) [H x W, C]
-            reg_preds: (Tensor) [H x W, 4]
+            conf_preds: (List[Tensor]) [H x W, 1]
+            cls_preds: (List[Tensor]) [H x W, C]
+            reg_preds: (List[Tensor]) [H x W, 4]
+        Output:
+            scores: (Tensor) [M,]
+            labels: (Tensor) [M,]
+            bboxes: (Tensor) [M, 4]
         """
-
+        device = conf_preds[0].device
         all_scores = []
         all_labels = []
         all_bboxes = []
 
-        for level, (conf_pred_i, cls_pred_i, reg_pred_i, anchors_i) in enumerate(zip(conf_preds, cls_preds, reg_preds, anchors)):
+        num_reg = [reg.size(0) for reg in reg_preds]
+
+        for level, (conf_pred_i, cls_pred_i, reg_pred_i) in enumerate(zip(conf_preds, cls_preds, reg_preds)):
             # (H x W x C,)
             scores_i = (torch.sqrt(conf_pred_i.sigmoid()
                         * cls_pred_i.sigmoid())).flatten()
 
             # Keep top k top scoring indices only.
-            num_topk = min(self.topk, reg_pred_i.size(0))
+            num_topk = min(torch.tensor(
+                self.topk, device=device), num_reg[level])
 
             # torch.sort is actually faster than .topk (at least on GPUs)
             predicted_prob, topk_idxs = scores_i.sort(descending=True)
@@ -203,24 +215,19 @@ class YOWO(nn.Module):
             labels = topk_idxs % self.num_classes
 
             reg_pred_i = reg_pred_i[anchor_idxs]
-            anchors_i = anchors_i[anchor_idxs]
+            # anchors_i = anchors_i[anchor_idxs]
 
             # decode box: [M, 4]
-            bboxes = self.decode_boxes(
-                anchors_i, reg_pred_i, self.stride[level])
+            # bboxes = self.decode_boxes(
+            #     anchors_i, reg_pred_i, self.stride[level])
 
             all_scores.append(scores)
             all_labels.append(labels)
-            all_bboxes.append(bboxes)
+            all_bboxes.append(reg_pred_i)
 
         scores = torch.cat(all_scores)
         labels = torch.cat(all_labels)
         bboxes = torch.cat(all_bboxes)
-
-        # to cpu
-        # scores = scores.cpu().numpy()
-        # labels = labels.cpu().numpy()
-        # bboxes = bboxes.cpu().numpy()
 
         # nms
         scores, labels, bboxes = multiclass_nms_tensor(
@@ -231,23 +238,30 @@ class YOWO(nn.Module):
             num_classes=self.num_classes,
             class_agnostic=False
         )
+        # print(scores.shape, labels.shape, bboxes.shape)
+        out_boxes = torch.cat(
+            [bboxes, scores.unsqueeze(-1), labels.unsqueeze(-1)], dim=-1)
 
-        return scores, labels, bboxes
+        return out_boxes
 
-    def post_process_multi_hot(self, conf_preds, cls_preds, reg_preds, anchors) -> tuple[torch.Tensor]:
+    def post_process_multi_hot(
+        self,
+        conf_preds: list[torch.Tensor],
+        cls_preds: list[torch.Tensor],
+        reg_preds: list[torch.Tensor]
+    ) -> torch.Tensor:
         """
         Input:
-            cls_pred: (Tensor) [H x W, C]
-            reg_pred: (Tensor) [H x W, 4]
+            conf_preds: (List[Tensor]) [H x W, 1]
+            cls_preds: (List[Tensor]) [H x W, C]
+            reg_preds: (List[Tensor]) [H x W, 4]
+        Output:
+            out_boxes: (Tensor) [M, 5 + C]
         """
         all_conf_preds = []
         all_cls_preds = []
         all_box_preds = []
-        for level, (conf_pred_i, cls_pred_i, reg_pred_i, anchors_i) in enumerate(zip(conf_preds, cls_preds, reg_preds, anchors)):
-            # decode box
-            box_pred_i = self.decode_boxes(
-                anchors_i, reg_pred_i, self.stride[level])
-
+        for conf_pred_i, cls_pred_i, reg_pred_i in zip(conf_preds, cls_preds, reg_preds):
             # conf pred
             conf_pred_i = torch.sigmoid(conf_pred_i.squeeze(-1))   # [M,]
 
@@ -257,7 +271,7 @@ class YOWO(nn.Module):
             # topk
             topk_conf_pred_i, topk_inds = torch.topk(conf_pred_i, self.topk)
             topk_cls_pred_i = cls_pred_i[topk_inds]
-            topk_box_pred_i = box_pred_i[topk_inds]
+            topk_box_pred_i = reg_pred_i[topk_inds]
 
             # threshold
             keep = topk_conf_pred_i.gt(self.conf_thresh)
@@ -274,15 +288,6 @@ class YOWO(nn.Module):
         cls_preds = torch.cat(all_cls_preds, dim=0)    # [M, C]
         box_preds = torch.cat(all_box_preds, dim=0)    # [M, 4]
 
-        # to cpu
-        # scores = conf_preds.cpu().numpy()
-        # labels = cls_preds.cpu().numpy()
-        # bboxes = box_preds.cpu().numpy()
-
-        # nms
-        # scores, labels, bboxes = multiclass_nms(
-        #     conf_preds, cls_preds, box_preds, self.nms_thresh, self.num_classes, True)
-
         scores, labels, bboxes = multiclass_nms_tensor(
             scores=conf_preds,
             labels=cls_preds,
@@ -293,142 +298,69 @@ class YOWO(nn.Module):
         )
 
         # [M, 5 + C]
-        # out_boxes = np.concatenate([bboxes, scores[..., None], labels], axis=-1)
         out_boxes = torch.cat([bboxes, scores.unsqueeze(-1), labels], dim=-1)
 
         return out_boxes
 
     @torch.no_grad()
-    def inference(self, video_clips: torch.Tensor) -> tuple[list[torch.Tensor]]:
+    def post_processing(
+        self,
+        outputs: dict[str, torch.Tensor],
+        img_h: int,
+        img_w: int
+    ) -> tuple[list[torch.Tensor]]:
         """
         Input:
-            video_clips: (Tensor) -> [B, 3, T, H, W].
+            outputs: (Dict) -> {
+                'pred_conf': (Tensor) [B, M, 1]
+                'pred_cls':  (Tensor) [B, M, C]
+                'pred_reg':  (Tensor) [B, M, 4]
+                'anchors':   (Tensor) [M, 2]
+                'stride':    (Int)
+            }
         return:
         """
-        B, _, _, img_h, img_w = video_clips.shape
 
-        # key frame
-        key_frame = video_clips[:, :, -1, :, :]
-        # 3D backbone
-        feat_3d = self.backbone_3d(video_clips)
+        all_conf_preds = outputs['pred_conf']
+        all_cls_preds = outputs['pred_cls']
+        all_reg_preds = outputs['pred_box']
 
-        # 2D backbone
-        cls_feats, reg_feats = self.backbone_2d(key_frame)
-
-        # non-shared heads
-        all_conf_preds = []
-        all_cls_preds = []
-        all_reg_preds = []
-        all_anchors = []
-        for level, (cls_feat, reg_feat) in enumerate(zip(cls_feats, reg_feats)):
-            if self.use_aggregate_feat:
-                cls_feat_2d_unfold = aggregate_features(
-                    feat_2d=cls_feat,
-                    feat_3d=feat_3d
-                )
-                reg_feat_2d_unfold = aggregate_features(
-                    feat_2d=reg_feat,
-                    feat_3d=feat_3d
-                )
-
-                cls_feat = self.cls_channel_encoders[level](
-                    cls_feat_2d_unfold, feat_3d)
-                reg_feat = self.reg_channel_encoders[level](
-                    reg_feat_2d_unfold, feat_3d)
-
-                cls_feat = F.interpolate(
-                    cls_feat, scale_factor=2 ** (2 - level))
-                reg_feat = F.interpolate(
-                    reg_feat, scale_factor=2 ** (2 - level))
-            else:
-                # upsample
-                feat_3d_up = F.interpolate(
-                    feat_3d, scale_factor=2 ** (2 - level))
-
-                # encoder
-                cls_feat = self.cls_channel_encoders[level](
-                    cls_feat, feat_3d_up)
-                reg_feat = self.reg_channel_encoders[level](
-                    reg_feat, feat_3d_up)
-
-            # head
-            cls_feat, reg_feat = self.heads[level](cls_feat, reg_feat)
-
-            # pred
-            conf_pred: torch.Tensor = self.conf_preds[level](reg_feat)
-            cls_pred: torch.Tensor = self.cls_preds[level](cls_feat)
-            reg_pred: torch.Tensor = self.reg_preds[level](reg_feat)
-
-            # generate anchors
-            fmp_size = conf_pred.shape[-2:]
-            anchors = self.generate_anchors(
-                fmp_size, self.stride[level], conf_pred.device)
-
-            # [B, C, H, W] -> [B, H, W, C] -> [B, M, C], M = HW
-            conf_pred = conf_pred.permute(
-                0, 2, 3, 1).contiguous().view(B, -1, 1)
-            cls_pred = cls_pred.permute(
-                0, 2, 3, 1).contiguous().view(B, -1, self.num_classes)
-            reg_pred = reg_pred.permute(0, 2, 3, 1).contiguous().view(B, -1, 4)
-
-            all_conf_preds.append(conf_pred)
-            all_cls_preds.append(cls_pred)
-            all_reg_preds.append(reg_pred)
-            all_anchors.append(anchors)
+        num_batches = all_conf_preds[0].shape[0]
+        device = all_conf_preds[0].device
+        height = torch.tensor(img_h, device=device)
+        width = torch.tensor(img_w, device=device)
 
         # batch process
-        if self.multi_hot:
-            batch_bboxes = []
-            for batch_idx in range(video_clips.size(0)):
-                cur_conf_preds = []
-                cur_cls_preds = []
-                cur_reg_preds = []
-                for conf_preds, cls_preds, reg_preds in zip(all_conf_preds, all_cls_preds, all_reg_preds):
-                    # [B, M, C] -> [M, C]
-                    cur_conf_preds.append(conf_preds[batch_idx])
-                    cur_cls_preds.append(cls_preds[batch_idx])
-                    cur_reg_preds.append(reg_preds[batch_idx])
+        batch_bboxes = []
+        # batch_bboxes = []
+        for batch_idx in range(num_batches):
+            cur_conf_preds = []
+            cur_cls_preds = []
+            cur_reg_preds = []
+            for conf_preds, cls_preds, reg_preds in zip(all_conf_preds, all_cls_preds, all_reg_preds):
+                # [B, M, C] -> [M, C]
+                cur_conf_preds.append(conf_preds[batch_idx])
+                cur_cls_preds.append(cls_preds[batch_idx])
+                cur_reg_preds.append(reg_preds[batch_idx])
 
+            if self.multi_hot:
                 # post-process
                 out_boxes = self.post_process_multi_hot(
-                    cur_conf_preds, cur_cls_preds, cur_reg_preds, all_anchors)
+                    cur_conf_preds, cur_cls_preds, cur_reg_preds)
+            else:
+                out_boxes = self.post_process_one_hot(
+                    cur_conf_preds, cur_cls_preds, cur_reg_preds)
 
-                # normalize bbox
-                out_boxes[..., :4] /= max(img_h, img_w)
-                out_boxes[..., :4] = out_boxes[..., :4].clamp(0., 1.)
+            # normalize bbox
+            out_boxes[..., :4] /= torch.max(
+                height,
+                width
+            )
+            out_boxes[..., :4] = out_boxes[..., :4].clamp(0., 1.)
 
-                batch_bboxes.append(out_boxes)
+            batch_bboxes.append(out_boxes)
 
-            return batch_bboxes
-
-        else:
-            batch_scores = []
-            batch_labels = []
-            batch_bboxes = []
-            for batch_idx in range(conf_pred.size(0)):
-                # [B, M, C] -> [M, C]
-                cur_conf_preds = []
-                cur_cls_preds = []
-                cur_reg_preds = []
-                for conf_preds, cls_preds, reg_preds in zip(all_conf_preds, all_cls_preds, all_reg_preds):
-                    # [B, M, C] -> [M, C]
-                    cur_conf_preds.append(conf_preds[batch_idx])
-                    cur_cls_preds.append(cls_preds[batch_idx])
-                    cur_reg_preds.append(reg_preds[batch_idx])
-
-                # post-process
-                scores, labels, bboxes = self.post_process_one_hot(
-                    cur_conf_preds, cur_cls_preds, cur_reg_preds, all_anchors)
-
-                # normalize bbox
-                bboxes /= max(img_h, img_w)
-                bboxes = bboxes.clamp(0., 1.)
-
-                batch_scores.append(scores)
-                batch_labels.append(labels)
-                batch_bboxes.append(bboxes)
-
-            return batch_scores, batch_labels, batch_bboxes
+        return batch_bboxes
 
     def forward(self, video_clips: torch.Tensor) -> dict[str, torch.Tensor]:
         """
@@ -443,8 +375,6 @@ class YOWO(nn.Module):
                 'stride':    (Int)
             }
         """
-        # if not self.trainable:
-        #     return self.inference(video_clips)
 
         # key frame
         key_frame = video_clips[:, :, -1, :, :]

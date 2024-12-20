@@ -2,12 +2,13 @@ import numpy as np
 import torch
 import torchvision
 
+
 def nms(bboxes, scores, nms_thresh):
     """"Pure Python NMS."""
-    x1 = bboxes[:, 0]  #xmin
-    y1 = bboxes[:, 1]  #ymin
-    x2 = bboxes[:, 2]  #xmax
-    y2 = bboxes[:, 3]  #ymax
+    x1 = bboxes[:, 0]  # xmin
+    y1 = bboxes[:, 1]  # ymin
+    x2 = bboxes[:, 2]  # xmax
+    y2 = bboxes[:, 3]  # ymax
 
     areas = (x2 - x1) * (y2 - y1)
     order = scores.argsort()[::-1]
@@ -27,11 +28,12 @@ def nms(bboxes, scores, nms_thresh):
         inter = w * h
 
         iou = inter / (areas[i] + areas[order[1:]] - inter + 1e-14)
-        #reserve all the boundingbox whose ovr less than thresh
+        # reserve all the boundingbox whose ovr less than thresh
         inds = np.where(iou <= nms_thresh)[0]
         order = order[inds + 1]
 
     return keep
+
 
 def multiclass_nms_class_agnostic(scores, labels, bboxes, nms_thresh):
     # nms
@@ -43,14 +45,16 @@ def multiclass_nms_class_agnostic(scores, labels, bboxes, nms_thresh):
 
     return scores, labels, bboxes
 
+
 def multiclass_nms_class_agnostic_tensor(
-    scores: torch.Tensor, 
-    labels: torch.Tensor, 
-    bboxes: torch.Tensor, 
+    scores: torch.Tensor,
+    labels: torch.Tensor,
+    bboxes: torch.Tensor,
     nms_thresh: float
 ) -> tuple[torch.Tensor]:
     keep = torchvision.ops.nms(bboxes, scores, nms_thresh)
     return scores[keep], labels[keep], bboxes[keep]
+
 
 def multiclass_nms_class_aware(scores, labels, bboxes, nms_thresh, num_classes):
     # nms
@@ -71,10 +75,11 @@ def multiclass_nms_class_aware(scores, labels, bboxes, nms_thresh, num_classes):
 
     return scores, labels, bboxes
 
+
 def multiclass_nms_class_aware_tensor(
-    scores: torch.Tensor, 
-    labels: torch.Tensor, 
-    bboxes: torch.Tensor, 
+    scores: torch.Tensor,
+    labels: torch.Tensor,
+    bboxes: torch.Tensor,
     nms_thresh: float,
     num_classes: int
 ) -> tuple[torch.Tensor]:
@@ -90,16 +95,16 @@ def multiclass_nms_class_aware_tensor(
     Returns:
         Tuple[torch.Tensor]: output (scores, labels, bboxes) after nms
     """
-    keep = torch.zeros(len(bboxes), dtype=torch.int32)
+    keep = torch.zeros(bboxes.size(0), dtype=torch.int32)
     for i in range(num_classes):
         inds = torch.where(labels == i)[0]
-        if len(inds) == 0:
+        if inds.size(0) == 0:
             continue
         c_bboxes = bboxes[inds]
         c_scores = scores[inds]
         c_keep = torchvision.ops.nms(c_bboxes, c_scores, nms_thresh)
         keep[inds[c_keep]] = 1
-    
+
     keep = torch.where(keep > 0)
     scores = scores[keep]
     labels = labels[keep]
@@ -107,16 +112,18 @@ def multiclass_nms_class_aware_tensor(
 
     return scores, labels, bboxes
 
+
 def multiclass_nms(scores, labels, bboxes, nms_thresh, num_classes, class_agnostic=False):
     if class_agnostic:
         return multiclass_nms_class_agnostic(scores, labels, bboxes, nms_thresh)
     else:
         return multiclass_nms_class_aware(scores, labels, bboxes, nms_thresh, num_classes)
 
+
 def multiclass_nms_tensor(
-    scores: torch.Tensor, 
-    labels: torch.Tensor, 
-    bboxes: torch.Tensor, 
+    scores: torch.Tensor,
+    labels: torch.Tensor,
+    bboxes: torch.Tensor,
     nms_thresh: float,
     num_classes: int,
     class_agnostic: bool = False

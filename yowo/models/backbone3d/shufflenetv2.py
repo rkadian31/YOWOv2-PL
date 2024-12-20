@@ -14,9 +14,12 @@ from .config import MODEL_URLS_SHUFFLENETV2
 __all__ = ['resnext50', 'resnext101', 'resnet152']
 
 # basic component
+
+
 def conv_bn(inp, oup, stride):
     return nn.Sequential(
-        nn.Conv3d(inp, oup, kernel_size=3, stride=stride, padding=(1,1,1), bias=False),
+        nn.Conv3d(inp, oup, kernel_size=3, stride=stride,
+                  padding=(1, 1, 1), bias=False),
         nn.BatchNorm3d(oup),
         nn.ReLU(inplace=True)
     )
@@ -35,14 +38,14 @@ def channel_shuffle(x, groups):
     batchsize, num_channels, depth, height, width = x.data.size()
     channels_per_group = num_channels // groups
     # reshape
-    x = x.view(batchsize, groups, 
-        channels_per_group, depth, height, width)
-    #permute
-    x = x.permute(0,2,1,3,4,5).contiguous()
+    x = x.view(batchsize, groups,
+               channels_per_group, depth, height, width)
+    # permute
+    x = x.permute(0, 2, 1, 3, 4, 5).contiguous()
     # flatten
     x = x.view(batchsize, num_channels, depth, height, width)
     return x
-    
+
 
 class InvertedResidual(nn.Module):
     def __init__(self, inp, oup, stride):
@@ -51,7 +54,7 @@ class InvertedResidual(nn.Module):
         assert stride in [1, 2]
 
         oup_inc = oup//2
-        
+
         if self.stride == 1:
             self.banch2 = nn.Sequential(
                 # pw
@@ -59,14 +62,15 @@ class InvertedResidual(nn.Module):
                 nn.BatchNorm3d(oup_inc),
                 nn.ReLU(inplace=True),
                 # dw
-                nn.Conv3d(oup_inc, oup_inc, 3, stride, 1, groups=oup_inc, bias=False),
+                nn.Conv3d(oup_inc, oup_inc, 3, stride,
+                          1, groups=oup_inc, bias=False),
                 nn.BatchNorm3d(oup_inc),
                 # pw-linear
                 nn.Conv3d(oup_inc, oup_inc, 1, 1, 0, bias=False),
                 nn.BatchNorm3d(oup_inc),
                 nn.ReLU(inplace=True)
             )
-        
+
         else:
             self.banch1 = nn.Sequential(
                 # dw
@@ -83,7 +87,8 @@ class InvertedResidual(nn.Module):
                 nn.BatchNorm3d(oup_inc),
                 nn.ReLU(inplace=True),
                 # dw
-                nn.Conv3d(oup_inc, oup_inc, 3, stride, 1, groups=oup_inc, bias=False),
+                nn.Conv3d(oup_inc, oup_inc, 3, stride,
+                          1, groups=oup_inc, bias=False),
                 nn.BatchNorm3d(oup_inc),
                 # pw-linear
                 nn.Conv3d(oup_inc, oup_inc, 1, 1, 0, bias=False),
@@ -91,12 +96,10 @@ class InvertedResidual(nn.Module):
                 nn.ReLU(inplace=True)
             )
 
-
     @staticmethod
     def _concat(x, out):
         # concatenate along channel axis
-        return torch.cat((x, out), 1)        
-
+        return torch.cat((x, out), 1)
 
     def forward(self, x):
         if self.stride == 1:
@@ -113,7 +116,7 @@ class InvertedResidual(nn.Module):
 class ShuffleNetV2(nn.Module):
     def __init__(self, model_name: SHUFFLENETV2_VERSION = 'shufflenet_v2_x1_0'):
         super(ShuffleNetV2, self).__init__()
-        
+
         self.stage_repeats = [4, 8, 4]
         # index 0 is invalid and should never be called.
         # only used for indexing convenience.
@@ -130,9 +133,9 @@ class ShuffleNetV2(nn.Module):
 
         # building first layer
         input_channel = self.stage_out_channels[1]
-        self.conv1 = conv_bn(3, input_channel, stride=(1,2,2))
+        self.conv1 = conv_bn(3, input_channel, stride=(1, 2, 2))
         self.maxpool = nn.MaxPool3d(kernel_size=3, stride=2, padding=1)
-        
+
         self.features = []
         # building inverted residual blocks
         for idxstage in range(len(self.stage_repeats)):
@@ -140,26 +143,26 @@ class ShuffleNetV2(nn.Module):
             output_channel = self.stage_out_channels[idxstage+2]
             for i in range(numrepeat):
                 stride = 2 if i == 0 else 1
-                self.features.append(InvertedResidual(input_channel, output_channel, stride))
+                self.features.append(InvertedResidual(
+                    input_channel, output_channel, stride))
                 input_channel = output_channel
-                
+
         # make it nn.Sequential
         self.features = nn.Sequential(*self.features)
 
         # # building last several layers
         # self.conv_last      = conv_1x1x1_bn(input_channel, self.stage_out_channels[-1])
         # self.avgpool        = nn.AvgPool3d((2, 1, 1), stride=1)
-    
 
     def forward(self, x):
         x = self.conv1(x)
         x = self.maxpool(x)
         x = self.features(x)
-        # out = self.conv_last(out) 
+        # out = self.conv_last(out)
 
         if x.size(2) > 1:
             x = torch.mean(x, dim=2, keepdim=True)
-        
+
         return x.squeeze(2)
 
 
@@ -173,7 +176,8 @@ def load_weight(model: nn.Module, arch: SHUFFLENETV2_VERSION):
 
     print('Loading 3D backbone pretrained weight: {}'.format(arch.upper()))
     # checkpoint state dict
-    checkpoint = load_state_dict_from_url(url=url, map_location="cpu", check_hash=True)
+    checkpoint = load_state_dict_from_url(
+        url=url, map_location="cpu", check_hash=True)
     checkpoint_state_dict = checkpoint.pop('state_dict')
 
     # model state dict
@@ -197,14 +201,14 @@ def load_weight(model: nn.Module, arch: SHUFFLENETV2_VERSION):
             print(k)
 
     model.load_state_dict(new_state_dict)
-        
+
     return model
 
 
 # build 3D shufflenet_v2
 def build_shufflenetv2_3d(model_name: SHUFFLENETV2_VERSION = "shufflenet_v2_x1_0", pretrained: bool = False):
     validate_literal_types(model_name, SHUFFLENETV2_VERSION)
-    
+
     model = ShuffleNetV2(model_name)
     feats = model.stage_out_channels[-1]
 
@@ -216,7 +220,8 @@ def build_shufflenetv2_3d(model_name: SHUFFLENETV2_VERSION = "shufflenet_v2_x1_0
 
 if __name__ == '__main__':
     import time
-    model, feat = build_shufflenetv2_3d(model_name='shufflenet_v2_x1_0', pretrained=True)
+    model, feat = build_shufflenetv2_3d(
+        model_name='shufflenet_v2_x1_0', pretrained=True)
     if torch.cuda.is_available():
         device = torch.device("cuda")
     else:

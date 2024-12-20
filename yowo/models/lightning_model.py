@@ -103,7 +103,13 @@ class YOWOv2Lightning(LightningModule):
             "cuda" if torch.cuda.is_available() else "cpu")
 
     def forward(self, video_clip: torch.Tensor, infer_mode=True):
-        return self.model.inference(video_clip) if infer_mode else self.model(video_clip)
+        x = self.model(video_clip)
+        return x if not infer_mode else self.post_processing(
+            x, video_clip.shape[-2], img_w=video_clip.shape[-1]
+        )
+
+    def post_processing(self, outputs, img_h, img_w):
+        return self.model.post_processing(outputs, img_h, img_w)
 
     def training_step(self, batch, batch_idx) -> torch.Tensor | Mapping[str, Any] | None:
         frame_ids, video_clips, targets = batch
@@ -143,7 +149,7 @@ class YOWOv2Lightning(LightningModule):
 
     def eval_step(self, batch, mode: Literal["val", "test"]):
         batch_img_name, batch_video_clip, batch_target = batch
-        batch_scores, batch_labels, batch_bboxes = self.forward(
+        outputs = self.forward(
             batch_video_clip, infer_mode=True)
 
         # process batch gt
@@ -161,15 +167,15 @@ class YOWOv2Lightning(LightningModule):
 
         # process batch predict
         preds = []
-        for idx, (scores, labels, bboxes) in enumerate(zip(batch_scores, batch_labels, batch_bboxes)):
+        for idx, output in enumerate(zip(outputs)):
             pred = {
                 "boxes": rescale_bboxes_tensor(
-                    bboxes=bboxes,
+                    bboxes=output[:, :4],
                     dest_width=batch_target[idx]["orig_size"][0],
                     dest_height=batch_target[idx]["orig_size"][1]
                 ),
-                "scores": scores,
-                "labels": labels.long(),  # int64
+                "scores": output[:, 4],
+                "labels": output[:, 5:].long(),  # int64
             }
             preds.append(pred)
 

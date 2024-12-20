@@ -137,7 +137,7 @@ labels/Basketball/v_Basketball_g08_c01/00073.txt
 
 6. Inference
 ```
-python inference.py \
+python scripts/inference.py \
 --source <video path or camera id> \
 --checkpoint <checkpoint path> \
 --conf <confidence (float)> \
