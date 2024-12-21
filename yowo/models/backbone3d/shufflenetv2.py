@@ -159,14 +159,10 @@ class ShuffleNetV2(nn.Module):
         x = self.maxpool(x)
         x = self.features(x)
         # out = self.conv_last(out)
-        if x.size(2) > 1:
-            x = torch.mean(x, dim=2, keepdim=True)
-
         return x.squeeze(2)
 
 
 def load_weight(model: nn.Module, arch: SHUFFLENETV2_VERSION):
-    print('Loading pretrained weight ...')
     url = MODEL_URLS_SHUFFLENETV2.get(arch, None)
     # check
     if url is None:
@@ -194,10 +190,8 @@ def load_weight(model: nn.Module, arch: SHUFFLENETV2_VERSION):
             shape_checkpoint = tuple(new_state_dict[k].shape)
             if shape_model != shape_checkpoint:
                 new_state_dict.pop(k)
-                print(k)
         else:
             new_state_dict.pop(k)
-            print(k)
 
     model.load_state_dict(new_state_dict)
 
