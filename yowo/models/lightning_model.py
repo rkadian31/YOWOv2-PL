@@ -242,3 +242,36 @@ class YOWOv2Lightning(LightningModule):
             ))
 
         return [optimizer], schedulers
+
+
+class YOWOv2PP(YOWOv2Lightning):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.multihot = kwargs.get("model_config", False).multi_hot
+
+    def forward(self, video_clip, conf_threshold):
+        x = super().post_processing(super().forward(video_clip))
+        outputs = []
+        for output in x:
+            if not self.multihot:
+                mask = output[..., 4] > conf_threshold
+                filtered_indices = mask.nonzero(as_tuple=True)
+                result = output[filtered_indices]
+
+            else:
+                # Extract confidence scores and class probabilities
+                confidence_scores = output[..., 4]  # Shape (B, N)
+                class_probabilities = output[..., 5:]  # Shape (B, N, 80)
+
+                # Calculate class scores
+                class_scores = torch.sqrt(
+                    confidence_scores.unsqueeze(-1) * class_probabilities)  # Shape (N, 80)
+                # Create a mask for scores above the threshold
+                mask = class_scores > conf_threshold  # Shape (N, 80)
+                keep_instance = mask.any(dim=-1)  # Shape (N,)
+                bboxes = output[keep_instance, :4]
+                cls_scores = class_scores[keep_instance, :]
+                result = torch.cat([bboxes, cls_scores], dim=-1)
+            outputs.append(result)
+
+        return outputs

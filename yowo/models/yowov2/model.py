@@ -325,6 +325,8 @@ class YOWO(nn.Module):
                 'stride':    (Int)
             }
         return:
+            out_boxes: (List[Tensor])   [B, M, 5 + C] # multihot
+                                        [B, M, 6] # onehot
         """
 
         all_conf_preds = outputs['pred_conf']
