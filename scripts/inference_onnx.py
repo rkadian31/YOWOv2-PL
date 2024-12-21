@@ -1,15 +1,7 @@
-from collections import deque
-import torch
-import cv2
-import numpy as np
-from yowo.models import YOWOv2Lightning
-from yowo.utils.box_ops import rescale_bboxes_tensor
 import argparse
-
-
-def preprocess_input(imgs: list[np.ndarray]):
-    inps = [cv2.resize(img, (224, 224)) for img in imgs]
-    return torch.tensor(np.stack(inps)).permute(3, 0, 1, 2).unsqueeze(0).float()
+import onnxruntime
+import numpy as np
+import cv2
 
 
 def read_classnames(classname_path):
@@ -17,6 +9,23 @@ def read_classnames(classname_path):
         classnames = f.read().splitlines()
         classnames = [name.strip() for name in classnames]
     return classnames
+
+
+def preprocess_input(imgs: list[np.ndarray]):
+    inps = [cv2.resize(img, (224, 224)) for img in imgs]
+    inps = np.stack(inps, dtype=np.float32).transpose((3, 0, 1, 2))[None, ...]
+    return inps
+
+
+def rescale_bboxes(bboxes: np.ndarray, dest_width: int, dest_height: int):
+    bboxes[..., [0, 2]] = np.clip(
+        bboxes[..., [0, 2]] * dest_width, a_min=0., a_max=dest_width
+    )
+    bboxes[..., [1, 3]] = np.clip(
+        bboxes[..., [1, 3]] * dest_height, a_min=0., a_max=dest_height
+    )
+
+    return bboxes
 
 
 if __name__ == "__main__":
@@ -29,25 +38,25 @@ if __name__ == "__main__":
                         help="Length of frame sequence for model")
     parser.add_argument("--checkpoint", required=True, type=str,
                         help="Checkpoint path")
-    parser.add_argument("--cuda", action="store_true",
-                        default=False, help="Use cuda")
     parser.add_argument("--classname", type=str,
                         required=True, help="Class name")
+    parser.add_argument("--multiclass", action="store_true",
+                        default=False, help="Multiclass")
     args = parser.parse_args()
-
-    model = YOWOv2Lightning.load_from_checkpoint(
-        checkpoint_path=args.checkpoint,
-        map_location=torch.device(
-            "cuda") if args.cuda else torch.device("cpu")
-    )
-
-    model.eval()
 
     CONF_THRESH = args.conf
     CLASSNAMES = read_classnames(args.classname)
-    IS_MULTIHOT = model.model.multi_hot
 
-    frames = deque(maxlen=args.len_clip)
+    ort_session = onnxruntime.InferenceSession(args.checkpoint)
+    input_names = ort_session.get_inputs()
+    output_names = ort_session.get_outputs()
+
+    input_names = [inp.name for inp in input_names]
+    output_names = [out.name for out in output_names]
+
+    confidence = np.array(args.conf, dtype=np.float64)
+
+    frames = []
     cap = cv2.VideoCapture(args.source)
     while True:
         ret, frame = cap.read()
@@ -61,46 +70,43 @@ if __name__ == "__main__":
                 frames.append(frame)
 
         frames.append(frame)
-        frames.popleft()
+        del frames[0]
 
         inps = preprocess_input(frames)
         vis_frame = frames[-1].copy()
-        batch_results = model.inference(inps)
-        # print(inp.shape)
-        if not IS_MULTIHOT:
-            indices = batch_results[0][:, 4] > CONF_THRESH
-            best_result = batch_results[0][indices]
-            bboxes = best_result[:, :4]
-            scores = best_result[:, 4].detach().cpu().numpy()
-            labels = best_result[:, 5:].long().detach().cpu().numpy()
-            bboxes = rescale_bboxes_tensor(
-                bboxes,
+
+        ort_inputs = {
+            input_names[0]: inps,
+            input_names[1]: confidence
+        }
+        outputs = ort_session.run(
+            output_names=output_names, input_feed=ort_inputs)[0]
+
+        if not args.multiclass:
+            labels = outputs[:, -1].astype(np.uint64)
+            bboxes = rescale_bboxes(
+                outputs[:, :4],
                 dest_height=height,
                 dest_width=width
-            ).numpy().astype(np.uint32)
+            ).astype(np.uint32)
+            scores = outputs[:, 4]
             if len(scores) > 0:
                 for i in range(len(scores)):
-                    cv2.rectangle(vis_frame, ((bboxes[i][0]), bboxes[i][1]),
+                    cv2.rectangle(vis_frame, (bboxes[i][0], bboxes[i][1]),
                                   (bboxes[i][2], bboxes[i][3]), (0, 255, 0), 2)
-                    cv2.putText(vis_frame, f"{CLASSNAMES[int(labels[i])]}: {scores[i]:.2f}", (
-                        bboxes[i][0], bboxes[i][1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+                    y_coord = np.clip(bboxes[i][1], a_min=5, a_max=height)
+                    cv2.putText(vis_frame, f"{CLASSNAMES[labels[i]]}: {scores[i]:.2f}", (
+                        bboxes[i][0], y_coord - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         else:
-            act_pose = False
-            cls_scores = torch.sqrt(
-                batch_results[0][:, 5:] * batch_results[0][:, 4].unsqueeze(-1)
-            )  # class confidence * detection confidence
-
-            keep_instance = torch.any(cls_scores > CONF_THRESH, dim=-1)
-            bboxes = rescale_bboxes_tensor(
-                bboxes=batch_results[0][keep_instance, :4],
+            scores = outputs[:, 4:]
+            bboxes = rescale_bboxes(
+                outputs[:, :4],
                 dest_height=height,
                 dest_width=width
-            )
-            cls_scores = cls_scores[keep_instance, :]
-
-            for bbox, cls_score in zip(bboxes, cls_scores):
-                indices = torch.where(cls_score > CONF_THRESH)[0].cpu().numpy()
-                x1, y1, x2, y2 = bbox.cpu().numpy().astype(np.uint32)
+            ).astype(np.uint32)
+            for i in range(scores.shape[0]):
+                x1, y1, x2, y2 = bboxes[i]
+                inds = np.where(scores[i] > confidence)[0]
                 # draw bbox
                 cv2.rectangle(vis_frame, (x1, y1),
                               (x2, y2), (0, 255, 0), 2)
@@ -110,9 +116,9 @@ if __name__ == "__main__":
                 coord = []
                 text = []
                 text_size = []
-                for _, cls_ind in enumerate(indices):
+                for _, cls_ind in enumerate(inds):
                     text.append("[{:.2f}] ".format(
-                        cls_score[cls_ind]) + str(CLASSNAMES[cls_ind]))
+                        scores[i][cls_ind]) + str(CLASSNAMES[cls_ind]))
                     text_size.append(cv2.getTextSize(
                         text[-1], font, fontScale=0.5, thickness=1)[0])
                     coord.append((x1+3, y1+14+20*_))
@@ -122,6 +128,10 @@ if __name__ == "__main__":
                 for t in range(len(text)):
                     cv2.putText(
                         vis_frame, text[t], coord[t], font, 0.5, (0, 0, 0), 1)
+
+            # cls_inds = np.where(instance[:, 4] > CONF_THRESH)
+
+            # if len(scores) > 0:
 
         cv2.imshow("frame", vis_frame)
         if cv2.waitKey(1) & 0xFF == 27:
