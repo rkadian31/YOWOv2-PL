@@ -135,16 +135,35 @@ labels/Basketball/v_Basketball_g08_c01/00073.txt
 ```
 `testlist.txt` is the same as `trainlist.txt`
 
-6. Inference
+## 6. Inference
 ```
 python scripts/inference.py \
---source <video path or camera id> \
---checkpoint <checkpoint path> \
---conf <confidence (float)> \
---multihot # use multihot for multiple classes (AVA) \
---classname <path to classname txt> \
---len-clip <length input (default: 16)> \
---cuda # use cuda 
+    --source <video path or camera id> \
+    --checkpoint <checkpoint path> \
+    --conf <confidence (float)> \
+    --multihot # use multihot for multiple classes (AVA) \
+    --classname <path to classname txt> \
+    --len-clip <length input (default: 16)> \
+    --cuda # use cuda 
+```
+
+## 7. ONNX
+Export ONNX:
+```
+python scripts/export_onnx.py \
+    --ckpt <checkpoint/path> \
+    --len-clip <length input (default: 16)> \
+    --onnx <path/to/write/onnx>
+
+```
+
+Inference onnx:
+```
+python scripts/inference_onnx.py \
+    --source 0 \
+    --checkpoint <path/to/onnx> \
+    --multiclass \ # multiclass (AVA)
+    --classname classnames/ava2.txt
 ```
 
 ## References
