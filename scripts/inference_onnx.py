@@ -57,7 +57,8 @@ if __name__ == "__main__":
     confidence = np.array(args.conf, dtype=np.float64)
 
     frames = []
-    cap = cv2.VideoCapture(args.source)
+    source = int(args.source) if args.source.isdigit() else args.source
+    cap = cv2.VideoCapture(source)
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -128,10 +129,6 @@ if __name__ == "__main__":
                 for t in range(len(text)):
                     cv2.putText(
                         vis_frame, text[t], coord[t], font, 0.5, (0, 0, 0), 1)
-
-            # cls_inds = np.where(instance[:, 4] > CONF_THRESH)
-
-            # if len(scores) > 0:
 
         cv2.imshow("frame", vis_frame)
         if cv2.waitKey(1) & 0xFF == 27:

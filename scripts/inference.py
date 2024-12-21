@@ -2,7 +2,7 @@ from collections import deque
 import torch
 import cv2
 import numpy as np
-from yowo.models import YOWOv2Lightning
+from yowo.models import YOWOv2PP
 from yowo.utils.box_ops import rescale_bboxes_tensor
 import argparse
 
@@ -35,7 +35,7 @@ if __name__ == "__main__":
                         required=True, help="Class name")
     args = parser.parse_args()
 
-    model = YOWOv2Lightning.load_from_checkpoint(
+    model = YOWOv2PP.load_from_checkpoint(
         checkpoint_path=args.checkpoint,
         map_location=torch.device(
             "cuda") if args.cuda else torch.device("cpu")
@@ -47,8 +47,9 @@ if __name__ == "__main__":
     CLASSNAMES = read_classnames(args.classname)
     IS_MULTIHOT = model.model.multi_hot
 
-    frames = deque(maxlen=args.len_clip)
-    cap = cv2.VideoCapture(args.source)
+    frames = []
+    source = int(args.source) if args.source.isdigit() else args.source
+    cap = cv2.VideoCapture(source)
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -61,18 +62,16 @@ if __name__ == "__main__":
                 frames.append(frame)
 
         frames.append(frame)
-        frames.popleft()
+        del frames[0]
 
         inps = preprocess_input(frames)
         vis_frame = frames[-1].copy()
-        batch_results = model.inference(inps)
+        outputs = model(inps, CONF_THRESH)
         # print(inp.shape)
         if not IS_MULTIHOT:
-            indices = batch_results[0][:, 4] > CONF_THRESH
-            best_result = batch_results[0][indices]
-            bboxes = best_result[:, :4]
-            scores = best_result[:, 4].detach().cpu().numpy()
-            labels = best_result[:, 5:].long().detach().cpu().numpy()
+            bboxes = outputs[0][:, :4]
+            scores = outputs[0][:, 4].detach().cpu().numpy()
+            labels = outputs[0][:, -1].long().detach().cpu().numpy()
             bboxes = rescale_bboxes_tensor(
                 bboxes,
                 dest_height=height,
@@ -85,22 +84,17 @@ if __name__ == "__main__":
                     cv2.putText(vis_frame, f"{CLASSNAMES[int(labels[i])]}: {scores[i]:.2f}", (
                         bboxes[i][0], bboxes[i][1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         else:
-            act_pose = False
-            cls_scores = torch.sqrt(
-                batch_results[0][:, 5:] * batch_results[0][:, 4].unsqueeze(-1)
-            )  # class confidence * detection confidence
-
-            keep_instance = torch.any(cls_scores > CONF_THRESH, dim=-1)
+            # outputs [x1, y1, x2, y2, cls_1, cls_2, ...]
+            cls_scores = outputs[0][:, 4:]
             bboxes = rescale_bboxes_tensor(
-                bboxes=batch_results[0][keep_instance, :4],
+                bboxes=outputs[0][:, :4],
                 dest_height=height,
                 dest_width=width
-            )
-            cls_scores = cls_scores[keep_instance, :]
+            ).cpu().numpy().astype(np.uint32)
 
             for bbox, cls_score in zip(bboxes, cls_scores):
                 indices = torch.where(cls_score > CONF_THRESH)[0].cpu().numpy()
-                x1, y1, x2, y2 = bbox.cpu().numpy().astype(np.uint32)
+                x1, y1, x2, y2 = bbox
                 # draw bbox
                 cv2.rectangle(vis_frame, (x1, y1),
                               (x2, y2), (0, 255, 0), 2)
@@ -116,8 +110,19 @@ if __name__ == "__main__":
                     text_size.append(cv2.getTextSize(
                         text[-1], font, fontScale=0.5, thickness=1)[0])
                     coord.append((x1+3, y1+14+20*_))
-                    cv2.rectangle(blk, (coord[-1][0]-1, coord[-1][1]-12), (coord[-1][0]+text_size[-1]
-                                                                           [0]+1, coord[-1][1]+text_size[-1][1]-4), (0, 255, 0), cv2.FILLED)
+                    cv2.rectangle(
+                        blk,
+                        (
+                            coord[-1][0]-1,
+                            coord[-1][1]-12
+                        ),
+                        (
+                            coord[-1][0]+text_size[-1][0]+1,
+                            coord[-1][1]+text_size[-1][1]-4
+                        ),
+                        (0, 255, 0),
+                        cv2.FILLED
+                    )
                 vis_frame = cv2.addWeighted(vis_frame, 1.0, blk, 0.5, 1)
                 for t in range(len(text)):
                     cv2.putText(
