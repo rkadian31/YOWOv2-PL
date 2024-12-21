@@ -159,7 +159,6 @@ class ShuffleNetV2(nn.Module):
         x = self.maxpool(x)
         x = self.features(x)
         # out = self.conv_last(out)
-
         if x.size(2) > 1:
             x = torch.mean(x, dim=2, keepdim=True)
 

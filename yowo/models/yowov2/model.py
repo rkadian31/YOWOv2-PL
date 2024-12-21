@@ -113,6 +113,11 @@ class YOWO(nn.Module):
 
         # init yowo
         self.init_yowo()
+        self.img_size = torch.tensor(params.img_size, requires_grad=False)
+        self.topk = torch.tensor(params.topk, requires_grad=False)
+        self.num_regions = torch.tensor([
+            (self.img_size // self.stride[i])**2 for i in range(len(params.stride))
+        ], requires_grad=False)
 
     def init_yowo(self):
         # Init yolo
@@ -184,12 +189,9 @@ class YOWO(nn.Module):
             labels: (Tensor) [M,]
             bboxes: (Tensor) [M, 4]
         """
-        device = conf_preds[0].device
         all_scores = []
         all_labels = []
         all_bboxes = []
-
-        num_reg = [reg.size(0) for reg in reg_preds]
 
         for level, (conf_pred_i, cls_pred_i, reg_pred_i) in enumerate(zip(conf_preds, cls_preds, reg_preds)):
             # (H x W x C,)
@@ -197,8 +199,7 @@ class YOWO(nn.Module):
                         * cls_pred_i.sigmoid())).flatten()
 
             # Keep top k top scoring indices only.
-            num_topk = min(torch.tensor(
-                self.topk, device=device), num_reg[level])
+            num_topk = torch.minimum(self.topk, self.num_regions[level])
 
             # torch.sort is actually faster than .topk (at least on GPUs)
             predicted_prob, topk_idxs = scores_i.sort(descending=True)
@@ -215,11 +216,6 @@ class YOWO(nn.Module):
             labels = topk_idxs % self.num_classes
 
             reg_pred_i = reg_pred_i[anchor_idxs]
-            # anchors_i = anchors_i[anchor_idxs]
-
-            # decode box: [M, 4]
-            # bboxes = self.decode_boxes(
-            #     anchors_i, reg_pred_i, self.stride[level])
 
             all_scores.append(scores)
             all_labels.append(labels)
@@ -269,7 +265,8 @@ class YOWO(nn.Module):
             cls_pred_i = torch.sigmoid(cls_pred_i)                 # [M, C]
 
             # topk
-            topk_conf_pred_i, topk_inds = torch.topk(conf_pred_i, self.topk)
+            topk_conf_pred_i, topk_inds = torch.topk(
+                conf_pred_i, self.topk.long().item())
             topk_cls_pred_i = cls_pred_i[topk_inds]
             topk_box_pred_i = reg_pred_i[topk_inds]
 
@@ -305,10 +302,8 @@ class YOWO(nn.Module):
     @torch.no_grad()
     def post_processing(
         self,
-        outputs: dict[str, torch.Tensor],
-        img_h: int,
-        img_w: int
-    ) -> tuple[list[torch.Tensor]]:
+        outputs: dict[str, torch.Tensor]
+    ) -> list[torch.Tensor]:
         """
         Input:
             outputs: (Dict) -> {
@@ -326,9 +321,6 @@ class YOWO(nn.Module):
         all_reg_preds = outputs['pred_box']
 
         num_batches = all_conf_preds[0].shape[0]
-        device = all_conf_preds[0].device
-        height = torch.tensor(img_h, device=device)
-        width = torch.tensor(img_w, device=device)
 
         # batch process
         batch_bboxes = []
@@ -352,9 +344,9 @@ class YOWO(nn.Module):
                     cur_conf_preds, cur_cls_preds, cur_reg_preds)
 
             # normalize bbox
-            out_boxes[..., :4] /= torch.max(
-                height,
-                width
+            out_boxes[..., :4] /= torch.maximum(
+                self.img_size,
+                self.img_size
             )
             out_boxes[..., :4] = out_boxes[..., :4].clamp(0., 1.)
 

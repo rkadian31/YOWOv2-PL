@@ -98,8 +98,8 @@ def multiclass_nms_class_aware_tensor(
     keep = torch.zeros(bboxes.size(0), dtype=torch.int32)
     for i in range(num_classes):
         inds = torch.where(labels == i)[0]
-        if inds.size(0) == 0:
-            continue
+        # if inds.size(0) == 0:
+        #     continue
         c_bboxes = bboxes[inds]
         c_scores = scores[inds]
         c_keep = torchvision.ops.nms(c_bboxes, c_scores, nms_thresh)

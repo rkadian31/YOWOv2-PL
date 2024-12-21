@@ -102,21 +102,25 @@ class YOWOv2Lightning(LightningModule):
         self._device = torch.device(
             "cuda" if torch.cuda.is_available() else "cpu")
 
-    def forward(self, video_clip: torch.Tensor, infer_mode=True):
-        x = self.model(video_clip)
-        return x if not infer_mode else self.post_processing(
-            x, video_clip.shape[-2], img_w=video_clip.shape[-1]
-        )
+        self.img_size = model_config.img_size
 
-    def post_processing(self, outputs, img_h, img_w):
-        return self.model.post_processing(outputs, img_h, img_w)
+    def forward(self, video_clip: torch.Tensor):
+        x = self.model(video_clip)
+        return x
+
+    def post_processing(self, outputs):
+        return self.model.post_processing(outputs)
+
+    def inference(self, video_clips: torch.Tensor) -> list[torch.Tensor]:
+        return self.post_processing(
+            self.forward(video_clips))
 
     def training_step(self, batch, batch_idx) -> torch.Tensor | Mapping[str, Any] | None:
         frame_ids, video_clips, targets = batch
         batch_size = video_clips.size(0)
         opt = self.optimizers()
         lr = opt.param_groups[0]['lr']
-        outputs = self.forward(video_clips, infer_mode=False)
+        outputs = self.forward(video_clips)
         loss_dict = self.criterion(outputs, targets)
         total_loss = loss_dict['losses']
 
@@ -149,8 +153,9 @@ class YOWOv2Lightning(LightningModule):
 
     def eval_step(self, batch, mode: Literal["val", "test"]):
         batch_img_name, batch_video_clip, batch_target = batch
-        outputs = self.forward(
-            batch_video_clip, infer_mode=True)
+        outputs = self.inference(
+            batch_video_clip
+        )
 
         # process batch gt
         gts = list(map(
