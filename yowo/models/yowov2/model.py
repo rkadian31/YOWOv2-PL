@@ -11,24 +11,29 @@ from yowo.utils.nms import multiclass_nms_tensor
 from ..schemas import ModelConfig
 
 
-def aggregate_features(feat_2d: torch.Tensor, feat_3d: torch.Tensor):
-    spatial_size_3d = feat_3d.size(-1)
-    spatial_size_2d = feat_2d.size(-1)
-    kernel_size = int(spatial_size_2d / spatial_size_3d)
-    if kernel_size > 1:
-        out_feat_2d = F.unfold(
-            feat_2d,
-            kernel_size=(kernel_size, kernel_size),
-            dilation=1,
-            stride=(kernel_size, kernel_size)
-        )
-        out_feat_2d = out_feat_2d.view(feat_2d.size(0), feat_2d.size(
-            1), -1, spatial_size_3d, spatial_size_3d)
-        out_feat_2d = torch.mean(out_feat_2d, dim=2)
-    else:
-        out_feat_2d = feat_2d
+def aggregate_features(feat_2ds: list[torch.Tensor], spatial_sizes: list[torch.Tensor]):
+    spatial_size_3d = spatial_sizes[-1]
+    kernel_sizes = [spatial_size //
+                    spatial_size_3d for spatial_size in spatial_sizes]
+    out_feat_2ds = []
+    for i, feat_2d in enumerate(feat_2ds):
+        kernel_size = kernel_sizes[i]
+        if kernel_size > 1:
+            out_feat_2d = F.unfold(
+                feat_2d,
+                kernel_size=(kernel_size, kernel_size),
+                dilation=1,
+                stride=(kernel_size, kernel_size)
+            )
+            out_feat_2d = out_feat_2d.view(feat_2d.size(0), feat_2d.size(
+                1), -1, spatial_size_3d, spatial_size_3d)
+            out_feat_2d = torch.mean(out_feat_2d, dim=2)
+        else:
+            out_feat_2d = feat_2d
 
-    return out_feat_2d
+        out_feat_2ds.append(out_feat_2d)
+
+    return out_feat_2ds
 
 # You Only Watch Once
 
@@ -43,7 +48,6 @@ class YOWO(nn.Module):
         self.num_classes = params.num_classes
         self.conf_thresh = params.conf_thresh
         self.nms_thresh = params.nms_thresh
-        self.topk = params.topk
         self.multi_hot = params.multi_hot
         self.use_aggregate_feat = params.use_aggregate_feat
 
@@ -113,11 +117,18 @@ class YOWO(nn.Module):
 
         # init yowo
         self.init_yowo()
-        self.img_size = torch.tensor(params.img_size, requires_grad=False)
-        self.topk = torch.tensor(params.topk, requires_grad=False)
-        self.num_regions = torch.tensor([
-            (self.img_size // self.stride[i])**2 for i in range(len(params.stride))
-        ], requires_grad=False)
+        img_size = torch.tensor(params.img_size)
+        topk = torch.tensor(params.topk)
+        spatial_sizes = torch.tensor([
+            img_size // self.stride[i] for i in range(len(params.stride))
+        ])
+        num_regions = torch.tensor([
+            spatial_size**2 for spatial_size in spatial_sizes
+        ])
+        self.register_buffer('img_size', img_size, persistent=False)
+        self.register_buffer('topk', topk, persistent=False)
+        self.register_buffer('spatial_sizes', spatial_sizes, persistent=False)
+        self.register_buffer('num_regions', num_regions, persistent=False)
 
     def init_yowo(self):
         # Init yolo
@@ -266,7 +277,7 @@ class YOWO(nn.Module):
 
             # topk
             topk_conf_pred_i, topk_inds = torch.topk(
-                conf_pred_i, self.topk.long().item())
+                conf_pred_i, self.topk)
             topk_cls_pred_i = cls_pred_i[topk_inds]
             topk_box_pred_i = reg_pred_i[topk_inds]
 
@@ -372,8 +383,8 @@ class YOWO(nn.Module):
         key_frame = video_clips[:, :, -1, :, :]
         # 3D backbone
         feat_3d = self.backbone_3d(video_clips)
-
         # 2D backbone
+        # list of Tensor (3 scales)
         cls_feats, reg_feats = self.backbone_2d(key_frame)
 
         # non-shared heads
@@ -381,21 +392,23 @@ class YOWO(nn.Module):
         all_cls_preds = []
         all_box_preds = []
         all_anchors = []
+
+        if self.use_aggregate_feat:
+            cls_feats = aggregate_features(
+                feat_2ds=cls_feats,
+                spatial_sizes=self.spatial_sizes
+            )
+            reg_feats = aggregate_features(
+                feat_2ds=reg_feats,
+                spatial_sizes=self.spatial_sizes
+            )
+
         for level, (cls_feat, reg_feat) in enumerate(zip(cls_feats, reg_feats)):
             if self.use_aggregate_feat:
-                cls_feat_2d_unfold = aggregate_features(
-                    feat_2d=cls_feat,
-                    feat_3d=feat_3d
-                )
-                reg_feat_2d_unfold = aggregate_features(
-                    feat_2d=reg_feat,
-                    feat_3d=feat_3d
-                )
-
                 cls_feat = self.cls_channel_encoders[level](
-                    cls_feat_2d_unfold, feat_3d)
+                    cls_feat, feat_3d)
                 reg_feat = self.reg_channel_encoders[level](
-                    reg_feat_2d_unfold, feat_3d)
+                    cls_feat, feat_3d)
 
                 cls_feat = F.interpolate(
                     cls_feat, scale_factor=2 ** (2 - level))
