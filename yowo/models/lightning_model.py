@@ -153,9 +153,7 @@ class YOWOv2Lightning(LightningModule):
 
     def eval_step(self, batch, mode: Literal["val", "test"]):
         batch_img_name, batch_video_clip, batch_target = batch
-        outputs = self.inference(
-            batch_video_clip
-        )
+        outputs = self.inference(batch_video_clip)
 
         # process batch gt
         gts = list(map(
