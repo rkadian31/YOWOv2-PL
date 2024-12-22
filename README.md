@@ -1,7 +1,41 @@
-# YOWOv2 - You Only Watch Once 2 in Pytorch Lightning
+# Spatial-temporal Action Detection YOWOv2 Pytorch Lightning
 
-## 1. Installation
-require python 3.10 or above
+![ucf24](assets/ucf24-demo.gif)
+![ava](assets/ava-demo.gif)
+
+# Documentation
+[Installation](#installation)
+
+[Training](#training)
+
+[Evaluation](#evaluation)
+
+[Dataset](#dataset)
+
+[Inference](#inference)
+
+[Export ONNX](#onnx)
+
+## Weights
+UCF24:
+
+|      Model     |  Clip  | GFLOPs |  Params | F-mAP |    Weight    |
+|----------------|--------|--------|---------|-------|--------------|
+|  YOWOv2-Nano   |   16   |  1.3   | 3.5 M   | 78.8  | [ckpt](https://github.com/lamnguyenvux/YOWOv2-PL/releases/download/v0.1.0/yowo_v2_nano_ucf24_16.ckpt) |
+|  YOWOv2-Tiny   |   16   |  2.9   | 10.9 M  | 80.5  | [ckpt](https://github.com/lamnguyenvux/YOWOv2-PL/releases/download/v0.1.0/yowo_v2_tiny_ucf24_16.ckpt) |
+|  YOWOv2-Medium |   16   |  12.0  | 52.0 M  | 83.1  | [ckpt](https://github.com/lamnguyenvux/YOWOv2-PL/releases/download/v0.1.0/yowo_v2_medium_ucf24_16.ckpt) |
+|  YOWOv2-Large  |   16   |  53.6 | 109.7 M | 85.2  | [ckpt](https://github.com/lamnguyenvux/YOWOv2-PL/releases/download/v0.1.0/yowo_v2_large_ucf24_16.ckpt) |
+
+AVA:
+|     Model      |    Clip    |    mAP    |   FPS   |    weight    |
+|----------------|------------|-----------|---------|--------------|
+|  YOWOv2-Nano   |     16     |   12.6    |   40    | [ckpt](https://github.com/lamnguyenvux/YOWOv2-PL/releases/download/v0.1.0/yowo_v2_nano_ava2_16.ckpt) |
+|  YOWOv2-Tiny   |     16     |   14.9    |   49    | [ckpt](https://github.com/lamnguyenvux/YOWOv2-PL/releases/download/v0.1.0/yowo_v2_tiny_ava2_16.ckpt) |
+|  YOWOv2-Medium |     16     |   18.4    |   41    | [ckpt](https://github.com/lamnguyenvux/YOWOv2-PL/releases/download/v0.1.0/yowo_v2_medium_ava2_16.ckpt) |
+|  YOWOv2-Large  |     16     |   20.2    |   29    | [ckpt](https://github.com/lamnguyenvux/YOWOv2-PL/releases/download/v0.1.0/yowo_v2_large_ava2_16.ckpt) |
+
+## Installation
+require python 3.10 or higher
 ```
 python -m venv venv
 
@@ -10,7 +44,7 @@ source venv/bin/activate
 pip install .
 ```
 
-## 2. Train model
+## Training
 Change path to your dataset and other parameters in config file from folder `configs`
 
 ```
@@ -60,7 +94,7 @@ yowo fit -c configs/yowov2_tiny_ucf24_jhmdb21.yaml \
 - `trainer.logger.class_path` is the path where you can import logger module: `lightning.pytorch.loggers.WandbLogger`, `lightning.pytorch.loggers.CSVLogger`
 - other `trainer.logger.*` are arguments provided for that module class. As we can see, `WandbLogger` needs some arguments such as `name`, `project`, `log_model`, `save_dir`, etc...
 
-## 3. Validate/test
+## Evaluation
 Validate
 ```
 yowo validate -c configs/yowov2_tiny_ucf24_jhmdb21.yaml \
@@ -82,11 +116,11 @@ yowo test -c configs/yowov2_tiny_ucf24_jhmdb21.yaml
 ```
 - `ckpt_path` has to be specified
 
-## 4. Dataset
-[UCF24 Dataset](https://www.kaggle.com/datasets/vulamnguyen/ucf24-spatial-temporal-localization-yowo)
+## Dataset
+1. UCF24
+Download: [UCF24 Dataset](https://www.kaggle.com/datasets/vulamnguyen/ucf24-spatial-temporal-localization-yowo)
 
-## 5. Structure of dataset
-Inside root directory
+Structure of UCF24 dataset inside root directory
 ```
 ├── rgb-images
 │   ├── BasketBall #action class
@@ -135,7 +169,50 @@ labels/Basketball/v_Basketball_g08_c01/00073.txt
 ```
 `testlist.txt` is the same as `trainlist.txt`
 
-## 6. Inference
+2. AVA
+```
+git clone --recurse-submodules https://github.com/lamnguyenvux/YOWOv2-PL.git
+```
+Donwload AVA dataset following steps in `download/AVA_Dataset`
+
+Structure of AVA dataset:
+```
+AVA_Dataset (data_root)
+|_ videos
+|  |_ [trainval]
+|  |  |_ [video name 0]
+|  |  |_ [video name 1]
+|  |  |_ ...
+|  |_ [test]
+|     |_ [video name 0]
+|     |_ [video name 1]
+|     |_ ...
+|_ videos_15min
+|  |_ [video name 0]
+|  |_ [video name 1]
+|  |_ ...
+|_ frames (frame_dir)
+|  |_ [video name 0]
+|  |  |_ [video name 0]_000001.jpg
+|  |  |_ [video name 0]_000002.jpg
+|  |  |_ ...
+|  |_ [video name 1]
+|     |_ [video name 1]_000001.jpg
+|     |_ [video name 1]_000002.jpg
+|     |_ ...
+|_ frame_lists (frame_list)
+|  |_ train.csv
+|  |_ val.csv
+|_ annotations (annotation_dir)
+   |_ ava_train_predicted_boxes.csv
+   |_ ava_val_predicted_boxes.csv
+   |_ ava_v2.2
+        |_ ava_action_list_v2.2_for_activitynet_2019 (labelmap_file)
+        |_ ava_train_v2.2.csv (gt_box_list)
+        |_ ava_train_excluded_timestamps_v2.2.csv (exclusion_file)
+```
+
+## Inference
 ```
 python scripts/inference.py \
     --source <video path or camera id> \
@@ -147,7 +224,7 @@ python scripts/inference.py \
     --cuda # use cuda 
 ```
 
-## 7. ONNX
+## ONNX
 Export ONNX:
 ```
 python scripts/export_onnx.py \

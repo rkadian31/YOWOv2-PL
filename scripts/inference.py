@@ -23,6 +23,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", default=0,
                         help="Input source (camera id or video file path)")
+    parser.add_argument("--out-file", type=str,
+                        help="Input source (camera id or video file path)")
     parser.add_argument("--conf", default=0.6, type=float,
                         help="Confidence threshold")
     parser.add_argument("--len-clip", default=16, type=int,
@@ -50,6 +52,14 @@ if __name__ == "__main__":
     frames = []
     source = int(args.source) if args.source.isdigit() else args.source
     cap = cv2.VideoCapture(source)
+
+    if args.out_file:
+        frame_width = int(cap.get(3))
+        frame_height = int(cap.get(4))
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        writer = cv2.VideoWriter(
+            args.out_file, fourcc, 20.0, (frame_width, frame_height))
+
     while True:
         ret, frame = cap.read()
         if not ret:
@@ -129,8 +139,12 @@ if __name__ == "__main__":
                         vis_frame, text[t], coord[t], font, 0.5, (0, 0, 0), 1)
 
         cv2.imshow("frame", vis_frame)
+        if args.out_file:
+            writer.write(vis_frame)
         if cv2.waitKey(1) & 0xFF == 27:
             break
 
+    if args.out_file:
+        writer.release()
     cap.release()
     cv2.destroyAllWindows()
