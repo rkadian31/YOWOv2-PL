@@ -207,7 +207,7 @@ class YOWOv2Lightning(LightningModule):
             prog_bar=False,
             logger=True,
             on_epoch=True,
-            rank_zero_only=True
+            sync_dist=self.trainer.num_devices > 1
         )
 
     def on_validation_epoch_end(self) -> None:
