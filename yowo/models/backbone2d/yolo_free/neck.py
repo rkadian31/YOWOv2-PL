@@ -1,111 +1,200 @@
-# SPP block with CSP module
-class SPPBlockCSP(nn.Module):
-    def __init__(
-        self,
-        in_dim: int,
-        out_dim: int,
-        expand_ratio: float = 0.5,
-        pooling_size: List[int] | int = [7, 13, 19],  # Increased pool sizes for larger resolution
-        act_type: ACTIVATION = 'lrelu',
-        norm_type: NORM = 'BN',
-        depthwise: bool = False
-        ):
-        super(SPPBlockCSP, self).__init__()
-        # Increase intermediate dimensions for higher resolution
-        inter_dim = int(in_dim * expand_ratio * 1.5)  # Increased by 1.5x
-        
-        self.cv1 = Conv(in_dim, inter_dim, k=1, act_type=act_type, norm_type=norm_type)
-        self.cv2 = Conv(in_dim, inter_dim, k=1, act_type=act_type, norm_type=norm_type)
-        
-        # Add an additional conv layer for better feature extraction
-        self.m = nn.Sequential(
-            Conv(
-                inter_dim, inter_dim, k=3, p=1, 
-                act_type=act_type, norm_type=norm_type, 
-                depthwise=depthwise
-            ),
-            Conv(
-                inter_dim, inter_dim, k=1,
-                act_type=act_type, norm_type=norm_type
-            ),
-            SPP(
-                inter_dim, 
-                inter_dim, 
-                expand_ratio=1.0, 
-                pooling_size=pooling_size, 
-                act_type=act_type, 
-                norm_type=norm_type
-            ),
-            Conv(
-                inter_dim, inter_dim, k=3, p=1, 
-                act_type=act_type, norm_type=norm_type, 
-                depthwise=depthwise
-            )
-        )
-        
-        # Add squeeze-and-excitation for better feature refinement
-        self.se = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            Conv(inter_dim * 2, inter_dim // 16, k=1),
-            nn.ReLU(inplace=True),
-            Conv(inter_dim // 16, inter_dim * 2, k=1),
-            nn.Sigmoid()
-        )
-        
-        self.cv3 = Conv(inter_dim * 2, out_dim, k=1, act_type=act_type, norm_type=norm_type)
+from typing import List
+import torch
+import torch.nn as nn
 
-    def forward(self, x):
-        x1 = self.cv1(x)
-        x2 = self.cv2(x)
-        x3 = self.m(x2)
-        
-        # Concatenate and apply channel attention
-        concat_feat = torch.cat([x1, x3], dim=1)
-        se_weight = self.se(concat_feat)
-        concat_feat = concat_feat * se_weight
-        
-        y = self.cv3(concat_feat)
-        return y
+from yowo.utils.validate import validate_literal_types
+from yowo.models.basic.utils import Conv
+from yowo.models.basic.types import (
+NORM,
+ACTIVATION,
+)
+from .types import NECK
 
-
-# SPPF with modifications for higher resolution
-class SPPF(nn.Module):
-    def __init__(self, in_dim: int, out_dim: int, k: List[int] | int = 7):  # Increased kernel size
-        super().__init__()
-        inter_dim = in_dim // 2  # hidden channels
-        self.cv1 = Conv(in_dim, inter_dim, k=1)
-        
-        # Add an additional parallel branch for multi-scale feature extraction
-        self.parallel_conv = Conv(inter_dim, inter_dim, k=3, p=1)
-        
-        self.cv2 = Conv(inter_dim * 5, out_dim, k=1)  # Adjusted for additional branch
-        self.m = nn.MaxPool2d(kernel_size=k, stride=1, padding=k // 2)
-
-    def forward(self, x):
-        x = self.cv1(x)
-        parallel_feat = self.parallel_conv(x)
-        y1 = self.m(x)
-        y2 = self.m(y1)
-        y3 = self.m(y2)
-
-        return self.cv2(torch.cat((x, parallel_feat, y1, y2, y3), 1))
-
-
-def build_neck(
-    model_name: NECK,
-    expand_ratio: float,
-    pooling_size: List[int] | int,
-    neck_act: ACTIVATION,
-    neck_norm: NORM,
-    neck_depthwise: bool,
-    in_dim: int, 
-    out_dim: int
+Spatial Pyramid Pooling
+class SPP(nn.Module):
+"""
+Spatial Pyramid Pooling
+"""
+def init(
+self,
+in_dim: int,
+out_dim: int,
+expand_ratio: float = 0.5,
+pooling_size: List[int] = [5, 9, 13],
+norm_type: NORM = 'BN',
+act_type: ACTIVATION = 'relu'
 ):
-    # Adjust input dimension for higher resolution
-    in_dim = int(in_dim * 1.5)  # Increase input dimension
-    out_dim = int(out_dim * 1.5)  # Increase output dimension
-    
-    validate_literal_types(model_name, NECK)
-    
-    if model_name == 'spp_block_csp':
-        pooling_size = [7, 13, 19]  # Adjusted pool sizes for higher resolution
+super(SPP, self).init()
+inter_dim = int(in_dim * expand_ratio)
+self.cv1 = Conv(in_dim, inter_dim, k=1, act_type=act_type, norm_type=norm_type)
+self.m = nn.ModuleList(
+[
+nn.MaxPool2d(kernel_size=k, stride=1, padding=k // 2)
+for k in pooling_size
+]
+)
+
+hy
+
+Copy
+    self.cv2 = Conv(inter_dim*(len(pooling_size) + 1), out_dim, k=1, act_type=act_type, norm_type=norm_type)
+
+def forward(self, x):
+    x = self.cv1(x)
+    x = torch.cat([x] + [m(x) for m in self.m], dim=1)
+    x = self.cv2(x)
+
+    return x
+SPP block with CSP module
+class SPPBlock(nn.Module):
+"""
+Spatial Pyramid Pooling Block
+"""
+def init(
+self,
+in_dim: int,
+out_dim: int,
+expand_ratio: float = 0.5,
+pooling_size: List[int] | int = [5, 9, 13],
+act_type: ACTIVATION = 'lrelu',
+norm_type: NORM = 'BN',
+):
+super(SPPBlockCSP, self).init()
+inter_dim = int(in_dim * expand_ratio)
+self.cv1 = Conv(in_dim, inter_dim, k=1, act_type=act_type, norm_type=norm_type)
+self.cv2 = nn.Sequential(
+SPP(inter_dim,
+inter_dim,
+expand_ratio=1.0,
+pooling_size=pooling_size,
+act_type=act_type,
+norm_type=norm_type),
+)
+self.cv3 = Conv(inter_dim * 2, out_dim, k=1, act_type=act_type, norm_type=norm_type)
+
+
+Copy
+def forward(self, x):
+    x1 = self.cv1(x)
+    x2 = self.cv2(x)
+    y = self.cv3(torch.cat([x1, x2], dim=1))
+
+    return y
+SPP block with CSP module
+class SPPBlockCSP(nn.Module):
+"""
+CSP Spatial Pyramid Pooling Block
+"""
+def init(
+self,
+in_dim: int,
+out_dim: int,
+expand_ratio: float = 0.5,
+pooling_size: List[int] | int = [5, 9, 13],
+act_type: ACTIVATION = 'lrelu',
+norm_type: NORM = 'BN',
+depthwise: bool = False
+):
+super(SPPBlockCSP, self).init()
+inter_dim = int(in_dim * expand_ratio)
+self.cv1 = Conv(in_dim, inter_dim, k=1, act_type=act_type, norm_type=norm_type)
+self.cv2 = Conv(in_dim, inter_dim, k=1, act_type=act_type, norm_type=norm_type)
+self.m = nn.Sequential(
+Conv(
+inter_dim, inter_dim, k=3, p=1,
+act_type=act_type, norm_type=norm_type,
+depthwise=depthwise
+),
+SPP(
+inter_dim,
+inter_dim,
+expand_ratio=1.0,
+pooling_size=pooling_size,
+act_type=act_type,
+norm_type=norm_type
+),
+Conv(
+inter_dim, inter_dim, k=3, p=1,
+act_type=act_type, norm_type=norm_type,
+depthwise=depthwise
+)
+)
+self.cv3 = Conv(inter_dim * 2, out_dim, k=1, act_type=act_type, norm_type=norm_type)
+
+
+Copy
+def forward(self, x):
+    x1 = self.cv1(x)
+    x2 = self.cv2(x)
+    x3 = self.m(x2)
+    y = self.cv3(torch.cat([x1, x3], dim=1))
+
+    return y
+Spatial Pyramid Pooling - Fast (SPPF) layer for YOLOv5 by Glenn Jocher
+class SPPF(nn.Module):
+def init(self, in_dim: int, out_dim: int, k: List[int] | int = 5): # equivalent to SPP(k=(5, 9, 13))
+super().init()
+inter_dim = in_dim // 2 # hidden channels
+self.cv1 = Conv(in_dim, inter_dim, k=1)
+self.cv2 = Conv(inter_dim * 4, out_dim, k=1)
+self.m = nn.MaxPool2d(kernel_size=k, stride=1, padding=k // 2)
+
+
+Copy
+def forward(self, x):
+    x = self.cv1(x)
+    y1 = self.m(x)
+    y2 = self.m(y1)
+
+    return self.cv2(torch.cat((x, y1, y2, self.m(y2)), 1))
+def build_neck(
+model_name: NECK,
+expand_ratio: float,
+pooling_size: List[int] | int,
+neck_act: ACTIVATION,
+neck_norm: NORM,
+neck_depthwise: bool,
+in_dim: int,
+out_dim: int
+):
+validate_literal_types(model_name, NECK)
+# build neck
+if model_name == 'spp_block':
+neck = SPPBlock(
+in_dim, out_dim,
+expand_ratio=expand_ratio,
+pooling_size=pooling_size,
+act_type=neck_act,
+norm_type=neck_norm,
+depthwise=neck_depthwise
+)
+
+ini
+
+Copy
+elif model_name == 'spp_block_csp':
+    neck = SPPBlockCSP(
+        in_dim, out_dim, 
+        expand_ratio=expand_ratio, 
+        pooling_size=pooling_size,
+        act_type=neck_act,
+        norm_type=neck_norm,
+        depthwise=neck_depthwise
+        )
+
+elif model_name == 'sppf':
+    neck = SPPF(in_dim, out_dim, k=pooling_size)
+
+return neck
+if name == 'main':
+neck_net = build_neck(
+model_name="sppf",
+expand_ratio=0.5,
+pooling_size=5,
+neck_act="lrelu",
+neck_norm="BN",
+neck_depthwise=True,
+in_dim=1024,
+out_dim=256
+)
+print(neck_net)
