@@ -1,46 +1,52 @@
-# from github: https://github.com/ruinmessi/ASFF/blob/master/utils/distributed_util.py
-
 import torch
 import torch.distributed as dist
 import os
 import subprocess
 import pickle
-
+import math
 
 def all_gather(data):
-    """
-    Run all_gather on arbitrary picklable data (not necessarily tensors)
-    Args:
-        data: any picklable object
-    Returns:
-        list[data]: list of data gathered from each rank
-    """
+    """Enhanced all_gather with high resolution support"""
     world_size = get_world_size()
     if world_size == 1:
         return [data]
 
-    # serialized to a Tensor
-    buffer = pickle.dumps(data)
+    # Check if data contains high resolution tensors
+    is_high_res = False
+    if isinstance(data, dict) and 'tensor' in data:
+        is_high_res = any(dim >= 1080 for dim in data['tensor'].shape)
+
+    # Optimize serialization for high resolution data
+    if is_high_res:
+        # Chunk large tensors before serialization
+        chunk_size = 1024 * 1024  # 1MB chunks
+        buffer = optimize_high_res_serialization(data, chunk_size)
+    else:
+        buffer = pickle.dumps(data)
+
     storage = torch.ByteStorage.from_buffer(buffer)
     tensor = torch.ByteTensor(storage).to("cuda")
 
-    # obtain Tensor size of each rank
+    # Enhanced size gathering for high resolution
     local_size = torch.tensor([tensor.numel()], device="cuda")
     size_list = [torch.tensor([0], device="cuda") for _ in range(world_size)]
     dist.all_gather(size_list, local_size)
     size_list = [int(size.item()) for size in size_list]
     max_size = max(size_list)
 
-    # receiving Tensor from all ranks
-    # we pad the tensor because torch all_gather does not support
-    # gathering tensors of different shapes
-    tensor_list = []
-    for _ in size_list:
-        tensor_list.append(torch.empty((max_size,), dtype=torch.uint8, device="cuda"))
-    if local_size != max_size:
-        padding = torch.empty(size=(max_size - local_size,), dtype=torch.uint8, device="cuda")
-        tensor = torch.cat((tensor, padding), dim=0)
-    dist.all_gather(tensor_list, tensor)
+    # Optimize memory usage for high resolution
+    if is_high_res:
+        # Use chunked gathering for large tensors
+        tensor_list = gather_large_tensors(tensor, max_size, size_list, world_size)
+    else:
+        # Original gathering for standard resolution
+        tensor_list = []
+        for _ in size_list:
+            tensor_list.append(torch.empty((max_size,), dtype=torch.uint8, device="cuda"))
+        if local_size != max_size:
+            padding = torch.empty(size=(max_size - local_size,), dtype=torch.uint8, device="cuda")
+            tensor = torch.cat((tensor, padding), dim=0)
+        dist.all_gather(tensor_list, tensor)
 
     data_list = []
     for size, tensor in zip(size_list, tensor_list):
@@ -49,99 +55,104 @@ def all_gather(data):
 
     return data_list
 
+def optimize_high_res_serialization(data, chunk_size):
+    """Optimize serialization for high resolution data"""
+    if isinstance(data, dict) and 'tensor' in data:
+        tensor = data['tensor']
+        if tensor.numel() * tensor.element_size() > chunk_size:
+            chunks = tensor.chunk(math.ceil(tensor.numel() * tensor.element_size() / chunk_size))
+            data['tensor_chunks'] = chunks
+            data['is_chunked'] = True
+            del data['tensor']
+    return pickle.dumps(data)
+
+def gather_large_tensors(tensor, max_size, size_list, world_size):
+    """Gather large tensors efficiently"""
+    chunk_size = 256 * 1024 * 1024  # 256MB chunks
+    num_chunks = math.ceil(max_size / chunk_size)
+    tensor_list = []
+
+    for i in range(num_chunks):
+        start_idx = i * chunk_size
+        end_idx = min((i + 1) * chunk_size, max_size)
+        chunk_tensor_list = []
+        
+        for _ in range(world_size):
+            chunk_tensor_list.append(
+                torch.empty((end_idx - start_idx,), 
+                          dtype=torch.uint8, 
+                          device="cuda")
+            )
+        
+        if i == num_chunks - 1 and tensor.size(0) < end_idx:
+            padding = torch.empty(
+                size=(end_idx - tensor.size(0),),
+                dtype=torch.uint8,
+                device="cuda"
+            )
+            chunk_tensor = torch.cat((tensor[start_idx:], padding), dim=0)
+        else:
+            chunk_tensor = tensor[start_idx:end_idx]
+            
+        dist.all_gather(chunk_tensor_list, chunk_tensor)
+        tensor_list.extend(chunk_tensor_list)
+
+    return tensor_list
 
 def reduce_dict(input_dict, average=True):
-    """
-    Args:
-        input_dict (dict): all the values will be reduced
-        average (bool): whether to do average or sum
-    Reduce the values in the dictionary from all processes so that all processes
-    have the averaged results. Returns a dict with the same fields as
-    input_dict, after reduction.
-    """
+    """Enhanced reduce_dict with high resolution support"""
     world_size = get_world_size()
     if world_size < 2:
         return input_dict
+
     with torch.no_grad():
         names = []
         values = []
-        # sort the keys so that they are consistent across processes
+        is_high_res = False
+
+        # Check for high resolution tensors
         for k in sorted(input_dict.keys()):
+            if isinstance(input_dict[k], torch.Tensor):
+                is_high_res = any(dim >= 1080 for dim in input_dict[k].shape)
             names.append(k)
             values.append(input_dict[k])
-        values = torch.stack(values, dim=0)
-        dist.all_reduce(values)
+
+        if is_high_res:
+            # Use chunked reduction for high resolution
+            values = chunk_and_reduce_tensors(values, world_size)
+        else:
+            # Original reduction
+            values = torch.stack(values, dim=0)
+            dist.all_reduce(values)
+
         if average:
             values /= world_size
         reduced_dict = {k: v for k, v in zip(names, values)}
     return reduced_dict
 
-
-def get_sha():
-    cwd = os.path.dirname(os.path.abspath(__file__))
-
-    def _run(command):
-        return subprocess.check_output(command, cwd=cwd).decode('ascii').strip()
-    sha = 'N/A'
-    diff = "clean"
-    branch = 'N/A'
-    try:
-        sha = _run(['git', 'rev-parse', 'HEAD'])
-        subprocess.check_output(['git', 'diff'], cwd=cwd)
-        diff = _run(['git', 'diff-index', 'HEAD'])
-        diff = "has uncommited changes" if diff else "clean"
-        branch = _run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'])
-    except Exception:
-        pass
-    message = f"sha: {sha}, status: {diff}, branch: {branch}"
-    return message
-
-
-def setup_for_distributed(is_master):
-    """
-    This function disables printing when not in master process
-    """
-    import builtins as __builtin__
-    builtin_print = __builtin__.print
-
-    def print(*args, **kwargs):
-        force = kwargs.pop('force', False)
-        if is_master or force:
-            builtin_print(*args, **kwargs)
-
-    __builtin__.print = print
-
-
-def is_dist_avail_and_initialized():
-    if not dist.is_available():
-        return False
-    if not dist.is_initialized():
-        return False
-    return True
-
-
-def get_world_size():
-    if not is_dist_avail_and_initialized():
-        return 1
-    return dist.get_world_size()
-
-
-def get_rank():
-    if not is_dist_avail_and_initialized():
-        return 0
-    return dist.get_rank()
-
-
-def is_main_process():
-    return get_rank() == 0
-
-
-def save_on_master(*args, **kwargs):
-    if is_main_process():
-        torch.save(*args, **kwargs)
-
+def chunk_and_reduce_tensors(tensors, world_size):
+    """Chunk and reduce large tensors"""
+    chunk_size = 64 * 1024 * 1024  # 64MB chunks
+    reduced_tensors = []
+    
+    for tensor in tensors:
+        if tensor.numel() * tensor.element_size() > chunk_size:
+            chunks = tensor.chunk(
+                math.ceil(tensor.numel() * tensor.element_size() / chunk_size)
+            )
+            reduced_chunks = []
+            for chunk in chunks:
+                dist.all_reduce(chunk)
+                reduced_chunks.append(chunk)
+            reduced_tensors.append(torch.cat(reduced_chunks))
+        else:
+            dist.all_reduce(tensor)
+            reduced_tensors.append(tensor)
+    
+    return torch.stack(reduced_tensors, dim=0)
 
 def init_distributed_mode(args):
+    """Enhanced distributed initialization with high resolution support"""
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
         args.rank = int(os.environ["RANK"])
         args.world_size = int(os.environ['WORLD_SIZE'])
@@ -156,12 +167,28 @@ def init_distributed_mode(args):
 
     args.distributed = True
 
-    torch.cuda.set_device(args.gpu)
+    # Configure for high resolution
+    if hasattr(args, 'high_resolution') and args.high_resolution:
+        # Set optimal NCCL parameters for high resolution
+        os.environ['NCCL_IB_TIMEOUT'] = '23'
+        os.environ['NCCL_DEBUG'] = 'INFO'
+        os.environ['NCCL_SOCKET_IFNAME'] = 'eth0'
+        
+        # Adjust CUDA memory allocation
+        torch.cuda.set_device(args.gpu)
+        torch.cuda.empty_cache()
+        torch.backends.cudnn.benchmark = True
+    else:
+        torch.cuda.set_device(args.gpu)
+
     args.dist_backend = 'nccl'
     print('| distributed init (rank {}): {}'.format(
         args.rank, args.dist_url), flush=True)
     torch.distributed.init_process_group(
-        backend=args.dist_backend, init_method=args.dist_url,
-        world_size=args.world_size, rank=args.rank)
+        backend=args.dist_backend, 
+        init_method=args.dist_url,
+        world_size=args.world_size, 
+        rank=args.rank
+    )
     torch.distributed.barrier()
     setup_for_distributed(args.rank == 0)
