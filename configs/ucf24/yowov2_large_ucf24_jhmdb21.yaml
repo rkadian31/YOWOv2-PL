@@ -131,7 +131,7 @@ data:
       train: trainlist.txt
       test: testlist.txt
     num_workers: auto
-    img_size: 224
+    img_size: 1920
     len_clip: 16
     sampling_rate: 1
     batch_size:
