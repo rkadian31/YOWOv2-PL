@@ -26,17 +26,26 @@ __all__ = ['build_backbone']
 class Conv(nn.Module):
     def __init__(
         self,
-        c1: int,                                    # in channels
-        c2: int,                                    # out channels
-        k: Sequence[int] | int = 1,                 # kernel size
-        p: Sequence[int] | int = 0,                 # padding
-        s: Sequence[int] | int = 1,                 # padding
-        d: Sequence[int] | int = 1,                 # dilation
-        act_type: ACTIVATION = 'silu',              # activation
-        norm_type: NORM = 'BN',                     # norm
-        depthwise: bool = False
+        c1: int,
+        c2: int,
+        k: Sequence[int] | int = 1,
+        p: Sequence[int] | int = 0,
+        s: Sequence[int] | int = 1,
+        d: Sequence[int] | int = 1,
+        act_type: ACTIVATION = 'silu',
+        norm_type: NORM = 'BN',
+        depthwise: bool = False,
+        high_resolution: bool = False  # Add high resolution flag
     ):
         super(Conv, self).__init__()
+        # Adjust channels for high resolution
+        if high_resolution:
+            c2 = int(c2 * 1.5)  # Increase channels for high resolution
+            
+        # Add stride adjustment for high resolution
+        if high_resolution and s > 1:
+            s = max(1, s - 1)  # Reduce stride for high resolution            
+      
         convs = []
         add_bias = False if norm_type else True
         if depthwise:
@@ -68,10 +77,27 @@ class ELANBlock(nn.Module):
     """
     ELAN BLock of YOLOv7's backbone
     """
-
-    def __init__(self, in_dim, out_dim, expand_ratio=0.5, model_size='large', act_type='silu', depthwise=False):
+    def __init__(self, in_dim, out_dim, expand_ratio=0.5, model_size='large', 
+                 act_type='silu', depthwise=False, high_resolution=False):  # Add parameter here
         super(ELANBlock, self).__init__()
-        inter_dim = int(in_dim * expand_ratio)
+        
+        # Adjust dimensions for high resolution
+        if high_resolution:
+            in_dim = int(in_dim * 1.5)
+            out_dim = int(out_dim * 1.5)
+        
+        inter_dim = int(in_dim * expand_ratio)    
+         # Add spatial attention for high resolution
+        self.high_resolution = high_resolution
+        if high_resolution:
+            self.spatial_attention = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Conv2d(in_dim, in_dim // 16, 1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(in_dim // 16, in_dim, 1),
+                nn.Sigmoid()
+            )
+        
         if model_size == 'tiny':
             depth = 1
         elif model_size == 'large':
@@ -204,12 +230,25 @@ class ELANNet_Large(nn.Module):
     ELAN-Net of YOLOv7.
     """
 
-    def __init__(self, depthwise=False):
+    def __init__(self, depthwise=False, high_resolution=False):
         super(ELANNet_Large, self).__init__()
+
+        # Adjust initial conv for high resolution
+        init_channels = 32 if not high_resolution else 48
+        self.high_resolution = high_resolution
+
+        # Add downsampling for very high resolution
+        if high_resolution:
+            self.downsample = nn.Sequential(
+                Conv(3, init_channels, k=7, s=2, p=3),
+                nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+            )
 
         # large backbone
         self.layer_1 = nn.Sequential(
-            Conv(3, 32, k=3, p=1, act_type='silu', depthwise=depthwise),
+             Conv(3 if not high_resolution else init_channels, 
+                 init_channels, k=3, p=1, act_type='silu', 
+                 depthwise=depthwise, high_resolution=high_resolution),
             Conv(32, 64, k=3, p=1, s=2, act_type='silu', depthwise=depthwise),
             # P1/2
             Conv(64, 64, k=3, p=1, act_type='silu', depthwise=depthwise)
@@ -238,13 +277,35 @@ class ELANNet_Large(nn.Module):
                 in_dim=1024, out_dim=1024, expand_ratio=0.25,
                 model_size='large', act_type='silu', depthwise=depthwise)                  # P5/32
         )
+    
+    def _refine_feature(self, x):
+        """Refine features for high resolution inputs"""
+        if x.size(-1) >= 240:  # Only for larger feature maps
+            attention = F.adaptive_avg_pool2d(x, 1)
+            attention = torch.sigmoid(attention)
+            x = x * attention
+        return x
 
     def forward(self, x):
+        # Add resolution check
+        B, C, H, W = x.shape
+        is_high_res = H >= 1080 or W >= 1920
+        
+        if is_high_res and self.high_resolution:
+            # Apply initial downsampling for very high resolution
+            x = self.downsample(x)
+            
         c1 = self.layer_1(x)
         c2 = self.layer_2(c1)
         c3 = self.layer_3(c2)
         c4 = self.layer_4(c3)
         c5 = self.layer_5(c4)
+        
+        # Add feature refinement for high resolution
+        if is_high_res and self.high_resolution:
+            c3 = self._refine_feature(c3)
+            c4 = self._refine_feature(c4)
+            c5 = self._refine_feature(c5)
 
         outputs = {
             'layer2': c3,
@@ -255,7 +316,7 @@ class ELANNet_Large(nn.Module):
 
 
 # build ELAN-Net
-def build_elannet(model_name: ELANNET = 'elannet_large'):
+def build_elannet(model_name: ELANNET = 'elannet_large', high_resolution=False):
     validate_literal_types(model_name, ELANNET)
     # model
     if model_name == 'elannet_large':
@@ -330,7 +391,7 @@ class ShuffleV2Block(nn.Module):
     @staticmethod
     def depthwise_conv(i, o, kernel_size, stride=1, padding=0, bias=False):
         return nn.Conv2d(i, o, kernel_size, stride, padding, bias=bias, groups=i)
-
+    
     def forward(self, x):
         if self.stride == 1:
             x1, x2 = x.chunk(2, dim=1)
@@ -339,8 +400,16 @@ class ShuffleV2Block(nn.Module):
             out = torch.cat((self.branch1(x), self.branch2(x)), dim=1)
 
         out = channel_shuffle(out, 2)
-
         return out
+        
+           
+    def _refine_feature(self, x):
+        """Refine features for high resolution inputs"""
+        if x.size(-1) >= 240:  # Only for larger feature maps
+            attention = F.adaptive_avg_pool2d(x, 1)
+            attention = torch.sigmoid(attention)
+            x = x * attention
+        return x
 
 
 class ShuffleNetV2(nn.Module):
@@ -444,9 +513,13 @@ def build_shufflenetv2(model_name: SHUFFLENETV2 = 'shufflenet_v2_x1_0'):
 
 
 # build backbone
-def build_backbone(model_name='elannet_large'):
+def build_backbone(model_name='elannet_large', high_resolution=False):
     if "elannet" in model_name:
-        return build_elannet(model_name)
+        backbone, feat_dims = build_elannet(model_name)
+        if high_resolution:
+            # Adjust feature dimensions for high resolution
+            feat_dims = [int(dim * 1.5) for dim in feat_dims]
+        return backbone, feat_dims
     else:
         return build_shufflenetv2(model_name=model_name)
 
