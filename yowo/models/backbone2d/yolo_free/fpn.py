@@ -10,7 +10,7 @@ from yowo.models.basic.types import (
     ACTIVATION
 )
 from .types import FPN_SIZE
-
+from typing import Optional, Tuple
 
 class ELANBlock(nn.Module):
     """
@@ -26,6 +26,17 @@ class ELANBlock(nn.Module):
         norm_type: NORM = 'BN'
     ):
         super(ELANBlock, self).__init__()
+        self.high_resolution = high_resolution
+
+        # Add channel attention for high resolution
+        if high_resolution:
+            self.channel_attention = nn.Sequential(
+                nn.AdaptiveAvgPool2d(1),
+                nn.Conv2d(out_dim, out_dim // 16, 1),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(out_dim // 16, out_dim, 1),
+                nn.Sigmoid()
+            )
         
  # Adjust dimensions for high resolution
         if high_resolution:
@@ -213,9 +224,15 @@ class PaFPNELAN(nn.Module):
         high_resolution: bool = False
     ):
         super().__init__()
+        self.high_resolution = high_resolution
         self.in_dims = in_dims
         self.out_dim = out_dim
-        self.high_resolution = high_resolution
+
+         # Add efficient processing for high resolution
+        self.use_efficient_processing = high_resolution
+        if self.use_efficient_processing:
+            self.downsample_factor = 2  # Increase if memory is still an issue
+            self.upsample_factor = 0.5        
         
         # Adjust dimensions for high resolution
         if high_resolution:
@@ -379,6 +396,37 @@ class PaFPNELAN(nn.Module):
             Conv(dim // 16, dim, k=1),
             nn.Sigmoid()
         )
+   
+    def _efficient_feature_fusion(self, x1, x2):
+        """Efficient feature fusion for high resolution"""
+        if self.high_resolution:
+            # Use adaptive pooling for large feature maps
+            if x1.shape[-1] >= 240:
+                x1 = F.adaptive_avg_pool2d(
+                    x1, 
+                    (min(x1.shape[-2], 240), 
+                     min(x1.shape[-1], 240))
+                )
+            if x2.shape[-1] >= 240:
+                x2 = F.adaptive_avg_pool2d(
+                    x2,
+                    (min(x2.shape[-2], 240),
+                     min(x2.shape[-1], 240))
+                )
+        return torch.cat([x1, x2], dim=1)
+
+    def _efficient_interpolate(self, x, scale_factor):
+        """Memory-efficient interpolation for high resolution"""
+        if self.high_resolution and x.shape[-1] >= 240:
+            # Use progressive upsampling for large feature maps
+            intermediate_size = (
+                x.shape[-2] * int(scale_factor ** 0.5),
+                x.shape[-1] * int(scale_factor ** 0.5)
+            )
+            x = F.interpolate(x, size=intermediate_size, mode='bilinear', align_corners=False)
+            return F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
+        return F.interpolate(x, scale_factor=scale_factor)
+
 
     def forward(self, features):
         """
@@ -389,6 +437,21 @@ class PaFPNELAN(nn.Module):
             List of processed features
         """
         c3, c4, c5 = features
+
+        if self.high_resolution:
+            # Efficient processing for high resolution
+            def process_feature(feat):
+                if feat.shape[-1] >= 240:  # Threshold for large feature maps
+                    feat = F.adaptive_avg_pool2d(
+                        feat, 
+                        (feat.shape[-2]//self.downsample_factor, 
+                         feat.shape[-1]//self.downsample_factor)
+                    )
+                return feat
+
+            c3 = process_feature(c3)
+            c4 = process_feature(c4)
+            c5 = process_feature(c5)
 
         # Top down
         ## P5 -> P4
@@ -447,6 +510,11 @@ def build_fpn(
     high_resolution: bool = False,
     input_size: Optional[Tuple[int, int]] = None
 ):
+    high_resolution = False
+    if input_size is not None:
+        h, w = input_size
+        high_resolution = h >= 1080 or w >= 1920
+        
     print('==============================')
     print('FPN: pafpn_elan')
     print(f'High Resolution Mode: {high_resolution}')
