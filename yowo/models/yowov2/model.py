@@ -43,8 +43,18 @@ class YOWO(nn.Module):
         self,
         params: ModelConfig
     ):
+        # Add memory optimization for high resolution
+        self.use_checkpoint = params.img_size[0] >= 1080 or params.img_size[1] >= 1920
+        
         super(YOWO, self).__init__()
-        self.stride = params.stride
+        # Add high resolution support
+        self.high_resolution = params.img_size[0] >= 1080 or params.img_size[1] >= 1920
+        # Adjust stride for high resolution
+        if self.high_resolution:
+            self.stride = [s * 2 for s in params.stride]  # Increase stride for memory efficiency
+        else:
+            self.stride = params.stride
+        self.feature_scales = [1.5 if self.high_resolution else 1.0] * len(self.stride)
         self.num_classes = params.num_classes
         self.conf_thresh = params.conf_thresh
         self.nms_thresh = params.nms_thresh
@@ -56,13 +66,19 @@ class YOWO(nn.Module):
         self.backbone_2d, bk_dim_2d = build_backbone_2d(
             model_name=params.backbone_2d,
             pretrained=params.pretrained_2d,
-            use_blurpool=params.use_blurpool
+            use_blurpool=params.use_blurpool,
+            high_resolution=self.high_resolution
         )
-
         # 3D backbone
         self.backbone_3d, bk_dim_3d = build_backbone_3d(
             model_name=params.backbone_3d,
             pretrained=params.pretrained_3d
+
+        # Move this block after backbone_3d initialization
+        if self.high_resolution:
+            bk_dim_2d = [int(dim * 1.5) for dim in bk_dim_2d]
+            bk_dim_3d = int(bk_dim_3d * 1.5)
+            params.head_dim = int(params.head_dim * 1.5)
         )
 
         # cls channel encoder
@@ -151,22 +167,36 @@ class YOWO(nn.Module):
             b.data.fill_(bias_value.item())
             cls_pred.bias = torch.nn.Parameter(b.view(-1), requires_grad=True)
 
-    def generate_anchors(self, fmp_size, stride, device):
-        """
-            fmp_size: (List) [H, W]
-        """
-        # generate grid cells
-        fmp_h, fmp_w = fmp_size
+   def generate_anchors(self, fmp_size, stride, device):
+    fmp_h, fmp_w = fmp_size
+    
+    if self.high_resolution:
+        # Use denser anchor grid for high resolution
+        base_stride = stride * 0.75  # Reduce effective stride
         anchor_y, anchor_x = torch.meshgrid(
-            [torch.arange(fmp_h), torch.arange(fmp_w)], indexing='ij')
-        # [H, W, 2] -> [HW, 2]
-        anchor_xy = torch.stack([anchor_x, anchor_y],
-                                dim=-1).float().view(-1, 2) + 0.5
+            [torch.arange(fmp_h, device=device), 
+             torch.arange(fmp_w, device=device)], 
+            indexing='ij'
+        )
+        anchor_xy = torch.stack([anchor_x, anchor_y], dim=-1).float() + 0.5
+        anchor_xy *= base_stride
+        
+        # Add additional scales for high resolution
+        scales = torch.tensor([0.75, 1.0, 1.25], device=device)
+        anchors = anchor_xy.unsqueeze(2) * scales.view(1, 1, -1, 1)
+        anchors = anchors.view(-1, 2)
+    else:
+        # Original anchor generation
+        anchor_y, anchor_x = torch.meshgrid(
+            [torch.arange(fmp_h, device=device), 
+             torch.arange(fmp_w, device=device)], 
+            indexing='ij'
+        )
+        anchor_xy = torch.stack([anchor_x, anchor_y], dim=-1).float() + 0.5
         anchor_xy *= stride
-        anchors = anchor_xy.to(device)
-        # anchors = anchor_xy
-
-        return anchors
+        anchors = anchor_xy.reshape(-1, 2)
+    
+    return anchors
 
     def decode_boxes(self, anchors, pred_reg, stride):
         """
@@ -367,44 +397,43 @@ class YOWO(nn.Module):
 
         return batch_bboxes
 
-    def forward(self, video_clips: torch.Tensor) -> dict[str, torch.Tensor]:
-        """
-        Input:
-            video_clips: (Tensor) -> [B, 3, T, H, W].
-        return:
-            outputs: (Dict) -> {
-                'pred_conf': (Tensor) [B, M, 1]
-                'pred_cls':  (Tensor) [B, M, C]
-                'pred_reg':  (Tensor) [B, M, 4]
-                'anchors':   (Tensor) [M, 2]
-                'stride':    (Int)
-            }
-        """
+def forward(self, video_clips: torch.Tensor) -> dict[str, torch.Tensor]:
+    B, C, T, H, W = video_clips.shape
+    # Add resolution check and processing
+    if self.high_resolution:
+        attention = self._create_spatial_attention(H, W)
+        video_clips = video_clips * attention
+        
+    # key frame
+    key_frame = video_clips[:, :, -1, :, :]
+    # 3D backbone
+    feat_3d = self.backbone_3d(video_clips)
+    # 2D backbone
+    # list of Tensor (3 scales)
+    cls_feats, reg_feats = self.backbone_2d(key_frame)
 
-        # key frame
-        key_frame = video_clips[:, :, -1, :, :]
-        # 3D backbone
-        feat_3d = self.backbone_3d(video_clips)
-        # 2D backbone
-        # list of Tensor (3 scales)
-        cls_feats, reg_feats = self.backbone_2d(key_frame)
+    # Process features if high resolution - ADD HERE
+    if self.high_resolution:
+        cls_feats = [self._process_high_res_features(f) for f in cls_feats]
+        reg_feats = [self._process_high_res_features(f) for f in reg_feats]
+        # Also process 3D features
+        feat_3d = self._process_high_res_features(feat_3d)
 
-        # non-shared heads
-        all_conf_preds = []
-        all_cls_preds = []
-        all_box_preds = []
-        all_anchors = []
+    # non-shared heads
+    all_conf_preds = []
+    all_cls_preds = []
+    all_box_preds = []
+    all_anchors = []
 
-        if self.use_aggregate_feat:
-            cls_feats = aggregate_features(
-                feat_2ds=cls_feats,
-                spatial_sizes=self.spatial_sizes
-            )
-            reg_feats = aggregate_features(
-                feat_2ds=reg_feats,
-                spatial_sizes=self.spatial_sizes
-            )
-
+    if self.use_aggregate_feat:
+        cls_feats = aggregate_features(
+            feat_2ds=cls_feats,
+            spatial_sizes=self.spatial_sizes
+        )
+        reg_feats = aggregate_features(
+            feat_2ds=reg_feats,
+            spatial_sizes=self.spatial_sizes
+        )
         for level, (cls_feat, reg_feat) in enumerate(zip(cls_feats, reg_feats)):
             if self.use_aggregate_feat:
                 cls_feat = self.cls_channel_encoders[level](
@@ -464,3 +493,24 @@ class YOWO(nn.Module):
         }
 
         return outputs
+
+ def _create_spatial_attention(self, H, W):
+        """Create spatial attention for high resolution features"""
+        attention = torch.ones((1, 1, 1, H, W), device=self.device)
+        if H >= 1080 or W >= 1920:
+            # Create grid-based attention
+            grid_h, grid_w = torch.meshgrid(
+                torch.linspace(0, 1, H, device=self.device),
+                torch.linspace(0, 1, W, device=self.device)'
+                indexing='ij'  # Add indexing parameter
+            )
+            attention = torch.sigmoid((grid_h + grid_w) / 2).view(1, 1, 1, H, W)
+        return attention
+
+    def _process_high_res_features(self, feat):
+        """Process high resolution features"""
+        if feat.size(-1) >= 240:  # Only for larger feature maps
+            attention = F.adaptive_avg_pool2d(feat, 1)
+            attention = torch.sigmoid(attention)
+            feat = feat * attention
+        return feat
