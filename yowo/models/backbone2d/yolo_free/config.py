@@ -66,12 +66,19 @@ YOLO_FREE_CONFIG = {
         'head_depthwise': False,
         },
 
-    'yolo_free_large': {
-        # model
+   'yolo_free_large': {
+        # Adjust strides for higher resolution
+        'stride': [16, 32, 64],  # Changed from [8, 16, 32] for better feature mapping
+        
+        # Increase FPN dimensions for higher resolution
+        'fpn_dim': [768, 1536, 768],  # Increased from [512, 1024, 512]
+        
+        # Adjust head dimensions
+        'head_dim': 384,  # Increased from 256
+        
+        # Other parameters remain the same
         'backbone': 'elannet_large',
         'pretrained': True,
-        'stride': [8, 16, 32],  # P3, P4, P5
-        # neck
         'neck': 'spp_block_csp',
         'neck_dim': 512,
         'expand_ratio': 0.5,
@@ -79,21 +86,17 @@ YOLO_FREE_CONFIG = {
         'neck_act': 'silu',
         'neck_norm': 'BN',
         'neck_depthwise': False,
-        # fpn
         'fpn': 'pafpn_elan',
-        'fpn_size': 'large', # 'tiny', 'large', 'huge
-        'fpn_dim': [512, 1024, 512],
+        'fpn_size': 'large',
         'fpn_norm': 'BN',
         'fpn_act': 'silu',
         'fpn_depthwise': False,
-        # head
         'head': 'decoupled_head',
-        'head_dim': 256,
         'head_norm': 'BN',
         'head_act': 'silu',
         'num_cls_head': 2,
         'num_reg_head': 2,
         'head_depthwise': False,
-        },
+    },
 
 }
