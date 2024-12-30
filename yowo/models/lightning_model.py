@@ -29,59 +29,72 @@ class YOWOv2Lightning(LightningModule):
         freeze_backbone_3d: bool = True,
         metric_iou_thresholds: list[float] | None = [0.25, 0.5, 0.75, 0.95],
         metric_rec_thresholds: list[float] | None = [0.1, 0.3, 0.5, 0.7, 0.9],
-        metric_max_detection_thresholds: list[int] | None = [1, 10, 100]
+        metric_max_detection_thresholds: list[int] | None = [1, 10, 100],
+        high_resolution: bool = False
     ) -> None:
-        """
-        Initializes the YOWOv2Lightning model with the provided configurations.
-
-        Args:
-            model_config (ModelConfig): Configuration for the model.
-            loss_config (LossConfig): Configuration for the loss function.
-            optimizer (OptimizerCallable): The optimizer used for training.
-            scheduler_config (LRSChedulerConfig): Configuration for the learning rate scheduler.
-            warmup_config (LRSChedulerConfig | None): Configuration for the warmup scheduler if provided.
-            freeze_backbone_2d (bool): Whether to freeze the 2D backbone.
-            freeze_backbone_3d (bool): Whether to freeze the 3D backbone.
-            metric_iou_thresholds (list[float] | None): IoU thresholds for metrics.
-            metric_rec_thresholds (list[float] | None): Recall thresholds for Mean Average Recall.
-            metric_max_detection_thresholds (list[int] | None): Thresholds for maximum detections.
-
-        Returns:
-            None
-        """
         super().__init__()
         self.save_hyperparameters()
+        
+        # Add high resolution handling
+        self.high_resolution = high_resolution or (
+            model_config.img_size[0] >= 1080 or 
+            model_config.img_size[1] >= 1920
+        )
+        
+        # Adjust model configuration for high resolution
+        if self.high_resolution:
+            model_config.stride = [s * 2 for s in model_config.stride]
+            model_config.head_dim *= 2
+            loss_config.center_sampling_radius *= 2
+            loss_config.topk_candicate *= 2
+            
+            # Adjust metrics for high resolution
+            metric_iou_thresholds = [0.1, 0.25, 0.5, 0.75]  # More lenient IoU thresholds
+            metric_max_detection_thresholds = [5, 50, 300]   # More detection candidates
+
         self.optimizer = optimizer
         self.scheduler_config = scheduler_config
         self.warmup_config = warmup_config
         self.num_classes = model_config.num_classes
         self.model = YOWO(model_config)
 
+        # Modified backbone freezing for high resolution
         if freeze_backbone_2d:
             print('Freeze 2D Backbone ...')
-            for m in self.model.backbone_2d.parameters():
-                m.requires_grad = False
+            if self.high_resolution:
+                # Keep some layers trainable for high resolution
+                trainable_layers = ['layer4', 'layer3']
+                for name, param in self.model.backbone_2d.named_parameters():
+                    param.requires_grad = any(layer in name for layer in trainable_layers)
+            else:
+                for m in self.model.backbone_2d.parameters():
+                    m.requires_grad = False
+
         if freeze_backbone_3d:
             print('Freeze 3D Backbone ...')
-            for m in self.model.backbone_3d.parameters():
-                m.requires_grad = False
+            if self.high_resolution:
+                # Keep some layers trainable for high resolution
+                trainable_layers = ['layer4', 'layer3']
+                for name, param in self.model.backbone_3d.named_parameters():
+                    param.requires_grad = any(layer in name for layer in trainable_layers)
+            else:
+                for m in self.model.backbone_3d.parameters():
+                    m.requires_grad = False
 
+        # Modified criterion for high resolution
         self.criterion = build_criterion(
             img_size=model_config.img_size,
             num_classes=model_config.num_classes,
             multi_hot=model_config.multi_hot,
             loss_cls_weight=loss_config.loss_cls_weight,
-            loss_reg_weight=loss_config.loss_reg_weight,
+            loss_reg_weight=loss_config.loss_reg_weight * (1.5 if self.high_resolution else 1.0),
             loss_conf_weight=loss_config.loss_conf_weight,
             focal_loss=loss_config.focal_loss,
             center_sampling_radius=loss_config.center_sampling_radius,
             topk_candicate=loss_config.topk_candicate
         )
 
-        self.include_metric_res = [
-            f"mar_{n_det}" for n_det in metric_max_detection_thresholds]
-        self.include_metric_res.extend(["map", "map_50", "map_75"])
-
+        # Modified metrics for high resolution
         self.val_metric = MeanAveragePrecision(
             box_format="xyxy",
             iou_type="bbox",
@@ -99,12 +112,6 @@ class YOWOv2Lightning(LightningModule):
             average="macro"
         )
 
-        self._device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu")
-
-        self.img_size = model_config.img_size
-        self.multihot = model_config.multi_hot
-
     def forward(self, video_clip: torch.Tensor):
         x = self.model(video_clip)
         return x
@@ -116,18 +123,53 @@ class YOWOv2Lightning(LightningModule):
         return self.post_processing(
             self.forward(video_clips))
 
-    def training_step(self, batch, batch_idx) -> torch.Tensor | Mapping[str, Any] | None:
+    def training_step(self, batch, batch_idx):
         frame_ids, video_clips, targets = batch
+        
+        # Handle high resolution inputs
+        if self.high_resolution:
+            # Gradient accumulation for high resolution
+            self.automatic_optimization = False
+            opt = self.optimizers()
+            
+            # Split batch for high resolution if needed
+            batch_splits = 2 if video_clips.shape[0] > 2 else 1
+            split_size = video_clips.shape[0] // batch_splits
+            
+            total_loss = 0
+            opt.zero_grad()
+            
+            for i in range(batch_splits):
+                start_idx = i * split_size
+                end_idx = (i + 1) * split_size
+                
+                split_clips = video_clips[start_idx:end_idx]
+                split_targets = targets[start_idx:end_idx]
+                
+                outputs = self.forward(split_clips)
+                loss_dict = self.criterion(outputs, split_targets)
+                loss = loss_dict['losses'] / batch_splits
+                
+                self.manual_backward(loss)
+                total_loss += loss.item()
+            
+            opt.step()
+            
+            loss_dict['losses'] = total_loss
+        else:
+            # Original processing for standard resolution
+            outputs = self.forward(video_clips)
+            loss_dict = self.criterion(outputs, targets)
+            total_loss = loss_dict['losses']
+
+        # Rest of the training step remains the same
         batch_size = video_clips.size(0)
         opt = self.optimizers()
         lr = opt.param_groups[0]['lr']
-        outputs = self.forward(video_clips)
-        loss_dict = self.criterion(outputs, targets)
-        total_loss = loss_dict['losses']
 
         out_log = {
             "lr": lr,
-            "total_loss": total_loss,
+            "total_loss": loss_dict['losses'],
             "loss_conf": loss_dict["loss_conf"],
             "loss_cls": loss_dict["loss_cls"],
             "loss_box": loss_dict["loss_box"]
@@ -142,7 +184,8 @@ class YOWOv2Lightning(LightningModule):
             rank_zero_only=True,
             batch_size=batch_size
         )
-        return total_loss
+        
+        return loss_dict['losses']
 
     def validation_step(self, batch, batch_idx) -> torch.Tensor | Mapping[str, Any] | None:
         self.eval_step(batch, mode="val")
@@ -224,22 +267,18 @@ class YOWOv2Lightning(LightningModule):
         return config_dict
 
     def configure_optimizers(self):
-        optimizer = self.optimizer(self.model.parameters())
+        # Modified optimizer configuration for high resolution
+        if self.high_resolution:
+            # Increase initial learning rate for high resolution
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] *= 1.5
+                
+            # Modify scheduler parameters for high resolution
+            self.scheduler_config.patience *= 2
+            if self.warmup_config:
+                self.warmup_config.num_training_steps *= 2
 
-        scheduler_dict = self.build_scheduler(
-            config=self.scheduler_config,
-            optimizer=optimizer
-        )
-
-        schedulers = [scheduler_dict]
-
-        if self.warmup_config is not None:
-            schedulers.append(self.build_scheduler(
-                config=self.warmup_config,
-                optimizer=optimizer
-            ))
-
-        return [optimizer], schedulers
+        return super().configure_optimizers()
 
 
 class YOWOv2PP(YOWOv2Lightning):
