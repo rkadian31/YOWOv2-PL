@@ -8,7 +8,8 @@ import argparse
 
 
 def preprocess_input(imgs: list[np.ndarray]):
-    inps = [cv2.resize(img, (224, 224)) for img in imgs]
+    # Change from (224, 224) to (1920, 1080)
+    inps = [cv2.resize(img, (1920, 1080)) for img in imgs]
     return torch.tensor(np.stack(inps)).permute(3, 0, 1, 2).unsqueeze(0).float()
 
 
